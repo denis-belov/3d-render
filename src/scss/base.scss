@@ -1,0 +1,402 @@
+@import url("https://fonts.googleapis.com/css?family=Roboto");
+
+
+
+$background-color: #233346;
+$theme-color: #26374c;
+$topbar-height: 60px;
+$topbar-button-width: 60px;
+// $sidebar-width: 300px;
+$sidebar-width: 0px;
+$border: 1px solid $background-color;
+
+
+
+#root
+{
+  overflow: hidden;
+}
+
+html,
+body
+{
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: "Roboto";
+  font-style: normal;
+  font-size: 18px;
+  overflow: auto;
+  background-color: $background-color;
+  touch-action: none;
+  overflow: hidden;
+}
+
+// svg { display:none; }
+
+.input-element
+{
+  display: block;
+  position: relative;
+  // width: fit-content;
+  height: 20px;
+  margin-top: 1px;
+  border: 1px solid grey;
+  font-size: 12px;
+  line-height: 20px;
+  color: white;
+  background-color: grey;
+  opacity: 0.5;
+
+  &.-button
+  {
+    width: fit-content;
+    padding-left: 2px;
+    padding-right: 2px;
+    cursor: pointer;
+
+    &.-active
+    {
+      background-color: #26374c;
+    }
+  }
+
+  &.-text
+  {
+    width: fit-content;
+    padding-left: 2px;
+    padding-right: 2px;
+  }
+
+  &.-select
+  {
+    height: 22px;
+  }
+
+  &.-range
+  {
+    -webkit-appearance: none;
+    appearance: none;
+
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    margin: unset;
+    cursor: ew-resize;
+    opacity: 0;
+
+    &::-webkit-slider-runnable-track
+    {
+      height: 100%;
+      border-radius: 0px;
+      background-color: grey;
+    }
+
+    &::-moz-range-track
+    {
+      height: 100%;
+      border-radius: 0px;
+      background-color: grey;
+    }
+
+    &::-webkit-slider-thumb
+    {
+      -webkit-appearance: none;
+      appearance: none;
+
+      width: 0;
+      height: 100%;
+      background-color: white;
+    }
+
+    &::-moz-range-thumb
+    {
+      width: 0;
+      height: 100%;
+      background-color: white;
+    }
+  }
+
+  &-range-progress
+  {
+    position: absolute;
+    width: 0;
+    height: 100%;
+    background-color: #26374c;
+  }
+
+  &-range-label
+  {
+    position: absolute;
+    color: white;
+    pointer-events: none;
+
+    &.-left
+    {
+      left: 2px;
+    }
+
+    &.-right
+    {
+      right: 2px;
+    }
+  }
+}
+
+.topbar
+{
+  display: block;
+  position: absolute;
+  width: 100%;
+  height: $topbar-height;
+  background-color: $theme-color;
+  text-align: center;
+  color: white;
+
+  &-button
+  {
+    display: inline-block;
+    position: relative;
+    // width: $topbar-button-width;
+    width: auto;
+    height: 100%;
+    cursor: pointer;
+    line-height: 60px;
+    padding: 0px 10px 0px 10px;
+    border-left: $border;
+    border-right: $border;
+
+    &-settings
+    {
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      right: 0;
+      bottom: 0;
+      background-image: url('./scss/settings.svg');
+      background-size: 16px;
+      background-position: 2px 2px;
+      background-repeat: no-repeat;
+
+      &:hover
+      {
+        background-image: url('./scss/settings-hover.svg');
+      }
+    }
+
+    &-settings_menu
+    {
+      display: none;
+      position: absolute;
+      width: 200px;
+      z-index: 2;
+      background-color: $theme-color;
+      padding: 4px;
+      border: $border;
+    }
+
+    &.-active
+    {
+      color: grey;
+    }
+
+    &:hover
+    {
+      color: grey;
+    }
+  }
+}
+
+.sidebar
+{
+  display: block;
+  position: absolute;
+  height: calc(100% - #{$topbar-height});
+  width: $sidebar-width;
+  right: 0;
+  top: $topbar-height;
+  border-top: $border;
+  background-color: $theme-color;
+}
+
+.viewport_grid
+{
+  position: absolute;
+  width: calc(100% - #{$sidebar-width});
+  height: calc(100% - #{$topbar-height});
+  top: calc(#{$topbar-height});
+  display: inline-block;
+
+  &-loader
+  {
+    width: 48px;
+    height: 48px;
+    border: 5px solid #FFF;
+    border-bottom-color: $theme-color;
+    border-radius: 50%;
+    display: inline-block;
+    box-sizing: border-box;
+    animation: rotation 1s linear infinite;
+  }
+
+  #content
+  {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+  }
+
+  &-modal
+  {
+    display: table;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    left: 0;
+    top: 0;
+    z-index: 9999;
+    background-color: $theme-color;
+    color: white;
+
+    &-inner
+    {
+      // display: table-cell;
+      vertical-align: middle;
+      // text-align: center;
+      overflow-y: hidden;
+      overflow-y: auto;
+      // position: relative;
+      height: 100%;
+      // padding: 20px;
+      box-sizing: border-box;
+
+      // width: 120%;
+      // padding-right: 20%;
+    }
+
+    a
+    {
+      display: block;
+      padding: 10px;
+      cursor: pointer;
+      // text-decoration: underline;
+      border-bottom: $border;
+      line-height: 25px;
+
+      &:hover
+      {
+        opacity: 0.75;
+      }
+    }
+  }
+
+  &-canvas_panel
+  {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    // border: 1px dashed white;
+    box-sizing: border-box;
+
+    &-placeholder
+    {
+      position: relative;
+      display: table;
+      width: 100%;
+      height: 100%;
+      color: white;
+      cursor: pointer;
+      background-color: inherit;
+
+      &-inner
+      {
+        position: relative;
+        display: table-cell;
+        width: 100%;
+        height: 100%;
+        vertical-align: middle;
+        text-align: center;
+
+        &:hover
+        {
+          // opacity: 0.5;
+          color: rgba(255, 255, 255, 0.75);
+        }
+      }
+    }
+
+    &-item
+    {
+      position: absolute;
+      overflow: hidden;
+      z-index: 2;
+      background-color: $theme-color;
+      border-right: $border;
+      border-top: $border;
+      box-sizing: border-box;
+
+      &-inner
+      {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        background-color: $theme-color;
+      }
+
+      &-toggle
+      {
+        position: absolute;
+        padding: 5px;
+        z-index: 2;
+        color: white;
+        cursor: pointer;
+      }
+    }
+  }
+}
+
+// dat-gui
+.dg.ac
+{
+  z-index: 3 !important;
+}
+
+.dg.main.a
+{
+  pointer-events: none !important;
+}
+
+.dg.main.a.taller-than-window
+{
+  pointer-events: auto !important;
+  transform: scale(0.85);
+}
+
+.close-button
+{
+  pointer-events: initial !important;
+}
+
+@keyframes rotation
+{
+  0%
+  {
+    transform: rotate(0deg);
+  }
+
+  100%
+  {
+    transform: rotate(360deg);
+  }
+}
+
+// input[type="range"].range-vertical
+// {
+//   /* removing default appearance */
+//   -webkit-appearance: none;
+//   appearance: none;
+//   /* creating a custom design */
+//   margin: unset;
+//   width: 10px;
+// }

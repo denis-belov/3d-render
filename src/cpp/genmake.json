@@ -1,0 +1,49 @@
+{
+	"variables":
+	{
+		"FLAGS_ADD": "-matomics -mbulk-memory",
+		"ARGS_LINKER": "--import-memory --shared-memory --initial-memory=1310720 --max-memory=4294967296 -z stack-size=1048576 -lwasi-emulated-process-clocks --export-table"
+	},
+
+	"entries":
+	{
+		"type": "bin",
+
+		"name": "main",
+
+		"include_directories":
+		[
+			"$(DIR_CC3D)",
+			"$(DIR_RENDERITY)"
+		],
+
+		"flags": "$(STD_20) $(NO_LINK) $(VERBOSE) $(OPT_FASTX) $(SSE) $(FLAGS_ADD)",
+
+		"args_linker": "$(ARGS_LINKER)",
+
+		"watch_files":
+		[
+			"$(SRC)/main.cpp",
+
+			// {
+			// 	"file": "$(DIR_RENDERITY)/math/build/$(ENV)/output/$(LIB_EXT)/math.$(LIB_EXT)",
+			// 	"watch_directories": "$(DIR_RENDERITY)/math/src",
+			// 	"do": "$(BIN_NODE) $(DIR_RENDERITY)/genmake $(ENV) $(DIR_RENDERITY)/math/genmake.json"
+			// },
+
+			{
+				"file": "$(DIR_RENDERITY)/wasm-wrapper/src/aux.cpp",
+
+				"envs": "clang-wasm32|clang-wasm64"
+			},
+
+			{
+				"file": "$(DIR_RENDERITY)/wasm-wrapper/src/mem-$(ENV).s",
+
+				"flags": "$(NO_LINK)",
+
+				"envs": "clang-wasm32|clang-wasm64"
+			}
+		]
+	}
+}

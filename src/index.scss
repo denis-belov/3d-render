@@ -1,0 +1,111 @@
+@import "scss/main";
+
+.dg {
+  color: #ecf5fd !important;
+  font-size: 15px !important;
+  width: 350px !important;
+  position: relative;
+}
+
+.dg.a {
+  position: fixed !important;
+  right: 5px !important;
+  float: none !important;
+  margin-right: 0px !important;
+  overflow-x: hidden;
+  height: 100% !important;
+  padding-right: 2px;
+}
+
+.dg.a ul:first-of-type {
+  position: relative;
+  height: min-content !important;
+}
+
+.dg.a ul:first-of-type li:last-of-type ul li:last-of-type {
+  border: none !important;
+}
+
+.dg.main {
+  transform: scale(0.75);
+  transform-origin: top right;
+}
+
+.dg.main .close-button.close-bottom {
+  border-top: 1px solid #30c999 !important;
+  position: relative !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  color: #30c999 !important;
+  padding: 10px 0px 10px 0px !important;
+  margin-top: 0px !important;
+  border: 1px solid #30c999;
+  background: #212f41 !important;
+  height: auto !important;
+}
+
+.dg .cr.number input[type="text"] {
+  color: #8dabc4 !important;
+  background-color: #212f41 !important;
+}
+
+.dg .c .slider-fg {
+  background-color: #8dabc4 !important;
+}
+
+.dg li {
+  height: auto;
+}
+
+.dg li.folder {
+  padding: 0px !important;
+  border-left: 0px !important;
+}
+
+.dg li.title {
+  background: #334b69 !important;
+  padding-left: 0px !important;
+  padding: 15px 35px 21px 24px !important;
+  text-align: center;
+}
+
+.dg li:not(.folder, .title) {
+  background: #26374c !important;
+  border-bottom: 1px solid #ecf5fd !important;
+}
+
+.dg li:not(.folder) {
+  padding: 12px 35px 16px 24px !important;
+  height: auto !important;
+}
+
+.dg .cr.number {
+  border-left: 0px !important;
+}
+
+.dg .c .slider {
+  background: #212f41 !important;
+}
+
+.dg .cr.function {
+  border-left: 0px !important;
+}
+
+.dg ul.closed li:not(.title) {
+  display: none;
+}
+
+.property-name {
+  width: auto !important;
+  white-space: nowrap !important;
+  text-overflow: initial !important;
+}
+
+.cr div:not(.c, .c div) {
+  display: flex;
+  justify-content: space-between;
+}
+
+.dg .c {
+  width: auto !important;
+}

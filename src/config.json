@@ -1,0 +1,523 @@
+{
+  "web":
+  {
+    "layout":
+    {
+      "width": 2,
+      "height": 1
+    },
+
+    "features":
+    [
+      "web"
+    ],
+
+    "sync": true,
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          }
+        ],
+
+        "segmentation": true
+      },
+
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 1
+          }
+        ],
+
+        "segmentation": true
+      }
+    ]
+  },
+
+  "segm1":
+  {
+    "layout":
+    {
+      "width": 2,
+      "height": 1
+    },
+
+    "sync": true,
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          }
+        ],
+
+        "segmentation": true
+      },
+
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 1
+          }
+        ],
+
+        "segmentation": true
+      }
+    ]
+  },
+
+  "segm2":
+  {
+    "filter":
+    [
+      [ "t2", "tse/fse", "tra/ax" ],
+      [ "diff" ],
+      [ "adc" ],
+      [ "dyn" ]
+    ],
+
+    "autolayout": true,
+
+    "layout":
+    {
+      "width": 2,
+      "height": 2
+    },
+
+    "sync": true,
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          }
+        ],
+
+        "segmentation": true
+      },
+
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 1
+          }
+        ],
+
+        "hidePlaceholder": true,
+        "segmentation": true
+      },
+
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 2
+          }
+        ],
+
+        "hidePlaceholder": true,
+        "segmentation": true
+      },
+
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 3
+          }
+        ],
+
+        "hidePlaceholder": true,
+        "segmentation": true
+      }
+    ]
+  },
+
+  "atrium":
+  {
+    "features":
+    [
+      "filtering"
+    ],
+
+    "tools":
+    [
+      "Length",
+      "NormalBrush",
+      "SmartBrush",
+      "Pan",
+      "Zoom",
+      "WindowLevel"
+    ],
+
+    "layout":
+    {
+      "width": 2,
+      "height": 2
+    },
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "sagittal",
+            "position": 1
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "coronal",
+            "position": 2
+          },
+
+          {
+            "type": "VOLUME_3D",
+            "position": 3
+          }
+        ],
+
+        "segmentation": true
+      }
+    ]
+  },
+
+  "single_study_2x2_":
+  {
+    "layout":
+    {
+      "width": 2,
+      "height": 2
+    },
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "sagittal",
+            "position": 1
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "coronal",
+            "position": 2
+          },
+
+          {
+            "type": "VOLUME_3D",
+            "position": 3
+          }
+        ]
+      }
+    ]
+  },
+
+  "single_study_2x2":
+  {
+    "layout":
+    {
+      "width": 2,
+      "height": 2
+    },
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC"
+          },
+
+          {
+            "type": "ORTHOGRAPHIC"
+          },
+
+          {
+            "type": "ORTHOGRAPHIC"
+          },
+
+          {
+            "type": "VOLUME_3D"
+          }
+        ],
+
+        "segmentation": true
+      }
+    ]
+  },
+
+  "test":
+  {
+    "layout":
+    {
+      "width": 2,
+      "height": 2
+    },
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "sagittal",
+            "position": 1
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "coronal",
+            "position": 2
+          },
+
+          {
+            "type": "VOLUME_3D",
+            "position": 3
+          }
+        ]
+      }
+    ]
+  },
+
+  "test2":
+  {
+    "layout":
+    {
+      "width": 2,
+      "height": 4
+    },
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "sagittal",
+            "position": 1
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "coronal",
+            "position": 2
+          },
+
+          {
+            "type": "VOLUME_3D",
+            "position": 3
+          }
+        ]
+      },
+
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 4
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "sagittal",
+            "position": 5
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "coronal",
+            "position": 6
+          },
+
+          {
+            "type": "VOLUME_3D",
+            "position": 7
+          }
+        ]
+      }
+    ]
+  },
+
+  "single_study_2x1":
+  {
+    "layout":
+    {
+      "width": 2,
+      "height": 1
+    },
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          },
+
+          {
+            "type": "VOLUME_3D",
+            "position": 1
+          }
+        ]
+      }
+    ]
+  },
+
+  "two_studies_3x2":
+  {
+    "layout":
+    {
+      "width": 3,
+      "height": 2
+    },
+
+    "sync": true,
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 0
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "sagittal",
+            "position": 1
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "coronal",
+            "position": 2
+          },
+
+          {
+            "type": "VOLUME_3D",
+            "position": 3
+          }
+        ],
+
+        "segmentation": true
+      },
+
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "axial",
+            "position": 4
+          },
+
+          {
+            "type": "ORTHOGRAPHIC",
+            "orientation": "sagittal",
+            "position": 5
+          }
+        ],
+
+        "segmentation": true
+      }
+    ]
+  },
+
+  "__two_studies_3x2":
+  {
+    "layout":
+    {
+      "width": 1,
+      "height": 1
+    },
+
+    "studies":
+    [
+      {
+        "viewports":
+        [
+          {
+            "type": "ORTHOGRAPHIC"
+          },
+
+          {
+            "type": "ORTHOGRAPHIC"
+          }
+        ],
+
+        "segmentation": true
+      }
+    ]
+  }
+}

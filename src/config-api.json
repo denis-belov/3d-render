@@ -1,0 +1,15 @@
+{
+  "PACS":
+  {
+    "URL": "https://tasty.pacs.fishbirds.ru",
+    "login": "orthanc",
+    "password": "orthanc"
+  },
+
+  "MARKUP":
+  {
+    "URL": "https://markup.fishbirds.ru",
+    "login": "MedUse_REST_User",
+    "password": "100500muRE"
+  }
+}

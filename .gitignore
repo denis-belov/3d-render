@@ -1,0 +1,10 @@
+**/node_modules
+**/build
+**/makefiles*
+**/assets-debug
+out
+_NPM_START.sh
+
+# deploy repo
+**/segm
+**/segm-web
