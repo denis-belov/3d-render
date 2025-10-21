@@ -36,6 +36,16 @@ export const getFileAPI =
 		)
 			.then(resp => resp.arrayBuffer());
 
+export const getFileAPI2 =
+	(url, headers) =>
+		fetch
+		(
+			url,
+
+			{ headers },
+		)
+			.then(resp => resp.arrayBuffer());
+
 
 
 const MEDUSE_BASE_URL = window.__API_MARKUP__ || config_api.MARKUP.URL;

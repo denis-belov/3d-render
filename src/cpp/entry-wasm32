@@ -3,7 +3,7 @@
 	{
 		"REGULAR":
 		{
-			"execute": "$BIN_NODE $DIR_RENDERITY/genmake clang-wasm32 --file=$DIR_3DRENDERER/src/cpp/genmake.json",
+			"execute": "node $DIR_RENDERITY/__deprecated__/genmake clang-wasm32 --file=$DIR_3DRENDERER/src/cpp/genmake.json",
 			"output": "$DIR_3DRENDERER/src/cpp/build/clang-wasm32/output/wasm/main.wasm",
 			"transform": "sharedbuffer"
 		}

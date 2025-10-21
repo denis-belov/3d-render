@@ -11,6 +11,214 @@ import JSZip from 'jszip';
 import * as THREE from 'three';
 import { OrbitControls as THREE_OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 import { STLExporter as THREE_STLExporter } from 'three/examples/jsm/exporters/STLExporter';
+import * as nifti from 'nifti-js';
+import * as niftiReader from 'nifti-reader-js';
+
+// NIfTI-1 writer implementation with proper header format
+const NIfTIWriter = {
+	createHeader(options) {
+		const {
+			dimensions = [1, 1, 1, 1],
+			pixelDims = [1, 1, 1, 1],
+			origin = [0, 0, 0],
+			quatern_b = 0,
+			quatern_c = 0,
+			quatern_d = 0,
+			qoffset_x = 0,
+			qoffset_y = 0,
+			qoffset_z = 0,
+			datatypeCode = 16, // float32
+			bitPix = 32,
+			cal_min = 0,
+			cal_max = 0,
+			description = 'NIfTI file',
+			intent_code = 0,
+			intent_p1 = 0,
+			intent_p2 = 0,
+			intent_p3 = 0,
+			scl_slope = 1,
+			scl_inter = 0,
+			slice_code = 0,
+			xyzt_units = 0,
+			qform_code = 0,
+			sform_code = 0,
+			srow_x = [1, 0, 0, 0],
+			srow_y = [0, 1, 0, 0],
+			srow_z = [0, 0, 1, 0],
+			intent_name = ''
+		} = options;
+
+		// Create NIfTI-1 header (352 bytes)
+		const header = new ArrayBuffer(352);
+		const view = new DataView(header);
+
+		// Initialize header with zeros
+		for (let i = 0; i < 352; i++) {
+			view.setUint8(i, 0);
+		}
+
+		// sizeof_hdr (4 bytes) - should be 348
+		view.setInt32(0, 348, true);
+
+		// data_type (10 bytes) - "NIfTI-1"
+		const dataTypeStr = "NIfTI-1\0\0\0";
+		for (let i = 0; i < 10; i++) {
+			view.setUint8(4 + i, i < dataTypeStr.length ? dataTypeStr.charCodeAt(i) : 0);
+		}
+
+		// db_name (18 bytes) - empty
+		// extents (4 bytes) - 0
+		// session_error (2 bytes) - 0
+		// regular (1 byte) - 'r'
+		view.setUint8(32, 0x72); // 'r'
+
+		// dim_info (1 byte) - 0
+		// dim (16 bytes) - dimensions array
+		view.setInt16(40, dimensions.length, true); // dim[0] = number of dimensions
+		for (let i = 0; i < Math.min(dimensions.length, 7); i++) {
+			view.setInt16(42 + i * 2, dimensions[i], true); // dim[1-7]
+		}
+
+		// intent_p1, intent_p2, intent_p3 (12 bytes)
+		view.setFloat32(56, intent_p1, true);
+		view.setFloat32(60, intent_p2, true);
+		view.setFloat32(64, intent_p3, true);
+
+		// intent_code (2 bytes)
+		view.setInt16(68, intent_code, true);
+
+		// datatype (2 bytes)
+		view.setInt16(70, datatypeCode, true);
+
+		// bitpix (2 bytes)
+		view.setInt16(72, bitPix, true);
+
+		// slice_start (2 bytes) - 0
+		// pixdim (32 bytes) - pixel dimensions
+		for (let i = 0; i < Math.min(pixelDims.length, 8); i++) {
+			view.setFloat32(76 + i * 4, pixelDims[i], true);
+		}
+
+		// vox_offset (4 bytes) - 352 (header size)
+		view.setFloat32(108, 352, true);
+
+		// scl_slope (4 bytes)
+		view.setFloat32(112, scl_slope, true);
+
+		// scl_inter (4 bytes)
+		view.setFloat32(116, scl_inter, true);
+
+		// slice_end (2 bytes) - 0
+		// slice_code (1 byte)
+		view.setUint8(122, slice_code);
+
+		// xyzt_units (1 byte)
+		view.setUint8(123, xyzt_units);
+
+		// cal_max (4 bytes)
+		view.setFloat32(124, cal_max, true);
+
+		// cal_min (4 bytes)
+		view.setFloat32(128, cal_min, true);
+
+		// slice_duration (4 bytes) - 0
+		// toffset (4 bytes) - 0
+		// glmax (4 bytes) - 0
+		// glmin (4 bytes) - 0
+
+		// descrip (80 bytes)
+		const descBytes = new TextEncoder().encode(description.substring(0, 79));
+		for (let i = 0; i < 80; i++) {
+			view.setUint8(148 + i, i < descBytes.length ? descBytes[i] : 0);
+		}
+
+		// aux_file (24 bytes) - empty
+
+		// qform_code (2 bytes)
+		view.setInt16(252, qform_code, true);
+
+		// sform_code (2 bytes)
+		view.setInt16(254, sform_code, true);
+
+		// quatern_b (4 bytes)
+		view.setFloat32(256, quatern_b, true);
+
+		// quatern_c (4 bytes)
+		view.setFloat32(260, quatern_c, true);
+
+		// quatern_d (4 bytes)
+		view.setFloat32(264, quatern_d, true);
+
+		// qoffset_x (4 bytes)
+		view.setFloat32(268, qoffset_x, true);
+
+		// qoffset_y (4 bytes)
+		view.setFloat32(272, qoffset_y, true);
+
+		// qoffset_z (4 bytes)
+		view.setFloat32(276, qoffset_z, true);
+
+		// srow_x (16 bytes)
+		for (let i = 0; i < 4; i++) {
+			view.setFloat32(280 + i * 4, srow_x[i], true);
+		}
+
+		// srow_y (16 bytes)
+		for (let i = 0; i < 4; i++) {
+			view.setFloat32(296 + i * 4, srow_y[i], true);
+		}
+
+		// srow_z (16 bytes)
+		for (let i = 0; i < 4; i++) {
+			view.setFloat32(312 + i * 4, srow_z[i], true);
+		}
+
+		// intent_name (16 bytes)
+		const intentNameBytes = new TextEncoder().encode(intent_name.substring(0, 15));
+		for (let i = 0; i < 16; i++) {
+			view.setUint8(328 + i, i < intentNameBytes.length ? intentNameBytes[i] : 0);
+		}
+
+		// magic (4 bytes) - "n+1\0"
+		view.setUint8(344, 0x6E); // 'n'
+		view.setUint8(345, 0x2B); // '+'
+		view.setUint8(346, 0x31); // '1'
+		view.setUint8(347, 0x00); // '\0'
+
+		return header;
+	},
+
+	write(header, data) {
+		// Convert data to appropriate format
+		let dataArray;
+		if (data instanceof Float32Array) {
+			dataArray = data;
+		} else if (data instanceof ArrayBuffer) {
+			dataArray = new Float32Array(data);
+		} else {
+			dataArray = new Float32Array(data);
+		}
+
+		LOG('header, data', header, data)
+
+		// Create the complete NIfTI file
+		const totalSize = header.byteLength + dataArray.byteLength;
+		const niftiFile = new ArrayBuffer(totalSize);
+		const niftiView = new Uint8Array(niftiFile);
+
+		LOG('totalSize', totalSize)
+
+		// Copy header
+		const headerView = new Uint8Array(header);
+		niftiView.set(headerView, 0);
+
+		// Copy data
+		const dataView = new Uint8Array(dataArray.buffer);
+		niftiView.set(dataView, header.byteLength);
+
+		return niftiFile;
+	}
+};
 
 // Volume rendering
 import '@kitware/vtk.js/Rendering/Profiles/Volume';
@@ -491,6 +699,29 @@ export default class Serie extends SerieBase
 						actions:
 						{
 							'download segmentation': () => this.downloadSegmentation(),
+
+							'export volume to NIfTI': async () => {
+								try {
+									await this.convertVolumeToNifti({
+										filename: `volume_${this.series_id}`,
+										includeSegmentation: false
+									});
+								} catch (error) {
+									console.error('Failed to export volume to NIfTI:', error);
+									alert('Failed to export volume to NIfTI: ' + error.message);
+								}
+							},
+
+							'export segmentation to NIfTI': async () => {
+								try {
+									await this.convertSegmentationToNifti(`segmentation_${this.series_id}`);
+								} catch (error) {
+									console.error('Failed to export segmentation to NIfTI:', error);
+									alert('Failed to export segmentation to NIfTI: ' + error.message);
+								}
+							},
+
+							'read NIfTI file': () => this.readNII(),
 
 							'upload segmentation 2': async () =>
 							{
@@ -1743,6 +1974,13 @@ export default class Serie extends SerieBase
 						{
 							gui_folders.actions.add(gui_options.actions, 'restore segmentation');
 						}
+
+						// Add NIfTI export options for web mode
+						gui_folders.actions.add(gui_options.actions, 'export volume to NIfTI');
+						if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__) {
+							gui_folders.actions.add(gui_options.actions, 'export segmentation to NIfTI');
+						}
+						gui_folders.actions.add(gui_options.actions, 'read NIfTI file');
 					}
 					else
 					{
@@ -1750,6 +1988,13 @@ export default class Serie extends SerieBase
 						gui_folders.actions.add(gui_options.actions, 'upload segmentation');
 						gui_folders.actions.add(gui_options.actions, 'upload segmentation 2');
 						gui_folders.actions.add(gui_options.actions, 'copy segmentation');
+
+						// Add NIfTI export options for non-web mode
+						gui_folders.actions.add(gui_options.actions, 'export volume to NIfTI');
+						if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__) {
+							gui_folders.actions.add(gui_options.actions, 'export segmentation to NIfTI');
+						}
+						gui_folders.actions.add(gui_options.actions, 'read NIfTI file');
 					}
 
 					gui_folders.actions.open();
@@ -2254,6 +2499,323 @@ export default class Serie extends SerieBase
 	downloadSegmentation2 (data)
 	{
 		downloadArraybuffer(data.buffer, 'segm');
+	}
+
+	/**
+	 * Convert volume data to NIfTI format and download
+	 * @param {Object} options - Conversion options
+	 * @param {string} options.filename - Output filename (without extension)
+	 * @param {boolean} options.includeSegmentation - Whether to include segmentation data
+	 * @param {number} options.dataType - NIfTI data type (default: 16 for float32)
+	 */
+	async convertVolumeToNifti(options = {})
+	{
+		const {
+			filename = 'volume',
+			includeSegmentation = false,
+			dataType = 16 // 16 = float32, 4 = int16, 8 = int32
+		} = options;
+
+		LOG('dataType', dataType)
+
+		if (!this.volume) {
+			throw new Error('No volume data available for conversion');
+		}
+
+		try {
+			// Get volume data
+			const volumeData = this.volume.imageData;
+			const scalarData = this.volume.scalarData;
+			const dimensions = this.volume.dimensions;
+			const spacing = this.volume.spacing;
+			const origin = this.volume.origin;
+			const direction = this.volume.direction;
+
+			LOG('scalarData', scalarData, this.volume)
+
+			// Prepare data array
+			let dataArray = this.volume_segm.scalarData;
+			if (includeSegmentation) {
+				// Use segmentation data if available
+				dataArray = new Float32Array(this.volume_segm.scalarData);
+			} else {
+				// Use original volume data
+				dataArray = new Float32Array(scalarData);
+			}
+
+			LOG('dataArray', dataArray)
+
+			let cal_min = Infinity;
+			let cal_max = -Infinity;
+			for (let i = 0; i < dataArray.length; i++) {
+				if (dataArray[i] < cal_min) {
+					cal_min = dataArray[i];
+				}
+			}
+			for (let i = 0; i < dataArray.length; i++) {
+				if (dataArray[i] > cal_max) {
+					cal_max = dataArray[i];
+				}
+			}
+
+			// Create NIfTI header
+			const niftiHeader = NIfTIWriter.createHeader({
+				dimensions: dimensions,
+				// pixelDims: spacing,
+				origin: origin,
+				quatern_b: direction[0],
+				quatern_c: direction[1],
+				quatern_d: direction[2],
+				qoffset_x: origin[0],
+				qoffset_y: origin[1],
+				qoffset_z: origin[2],
+				datatypeCode: dataType,
+				bitPix: dataType === 16 ? 32 : (dataType === 4 ? 16 : 32),
+				cal_min: cal_min,
+				cal_max: cal_max,
+				description: 'Converted from DICOM volume data',
+				intent_code: 0, // NIFTI_INTENT_NONE
+				intent_p1: 0,
+				intent_p2: 0,
+				intent_p3: 0,
+				scl_slope: 1.0,
+				scl_inter: 0.0,
+				slice_code: 0,
+				xyzt_units: 0, // NIFTI_UNITS_UNKNOWN
+				qform_code: 1, // NIFTI_XFORM_SCANNER_ANAT
+				sform_code: 1, // NIFTI_XFORM_SCANNER_ANAT
+				srow_x: [spacing[0], 0, 0, origin[0]],
+				srow_y: [0, spacing[1], 0, origin[1]],
+				srow_z: [0, 0, spacing[2], origin[2]],
+				intent_name: includeSegmentation ? 'Segmentation' : 'Volume'
+			});
+
+			LOG('niftiHeader', niftiHeader)
+
+			// Create NIfTI file
+			const niftiFile = NIfTIWriter.write(niftiHeader, dataArray);
+
+			// Download the file
+			downloadArraybuffer(niftiFile, `${filename}.nii`);
+
+			// Read and verify the created NIfTI file
+			this.readNiftiFile(niftiFile, filename);
+
+			console.log('NIfTI file created successfully:', {
+				dimensions,
+				spacing,
+				origin,
+				dataType,
+				includeSegmentation
+			});
+
+		} catch (error) {
+			console.error('Error converting volume to NIfTI:', error);
+			throw error;
+		}
+	}
+
+	readNII ()
+	{
+		// Create file input element
+		const fileInput = document.createElement('input');
+		fileInput.type = 'file';
+		fileInput.accept = '.nii,.nii.gz';
+		fileInput.style.display = 'none';
+
+		// Add to DOM temporarily
+		document.body.appendChild(fileInput);
+
+		// Handle file selection
+		fileInput.addEventListener('change', async (event) => {
+			const file = event.target.files[0];
+			if (!file) {
+				document.body.removeChild(fileInput);
+				return;
+			}
+
+			try {
+				LOG('Selected NIfTI file:', file.name, file.size, 'bytes');
+
+				// Read file as ArrayBuffer
+				const arrayBuffer = await this.readFileAsArrayBuffer(file);
+
+				// Parse with nifti-js
+				LOG('Parsing with nifti-js...');
+				const niftiData = nifti.parse(arrayBuffer);
+
+				LOG('niftiData', niftiData)
+
+				return;
+
+				LOG('NIfTI file parsed with nifti-js:', {
+					header: niftiData.header,
+					image: niftiData.image,
+					dimensions: niftiData.header.dims,
+					dataType: niftiData.header.datatype,
+					bitPix: niftiData.header.bitpix,
+					calMin: niftiData.header.cal_min,
+					calMax: niftiData.header.cal_max,
+					description: niftiData.header.descrip,
+					pixDims: niftiData.header.pixDims,
+					affine: niftiData.affine
+				});
+
+				// Log image data statistics
+				if (niftiData.image && niftiData.image.length > 0) {
+					const imageData = niftiData.image;
+					const min = Math.min(...imageData);
+					const max = Math.max(...imageData);
+					const mean = imageData.reduce((a, b) => a + b, 0) / imageData.length;
+
+					LOG('NIfTI image data statistics:', {
+						length: imageData.length,
+						min: min,
+						max: max,
+						mean: mean,
+						first10Values: imageData.slice(0, 10),
+						last10Values: imageData.slice(-10)
+					});
+				}
+
+				// Also try with nifti-reader-js for comparison
+				try {
+					LOG('Parsing with nifti-reader-js for comparison...');
+					const niftiReaderData = niftiReader.parse(arrayBuffer);
+					LOG('NIfTI file parsed with nifti-reader-js:', niftiReaderData);
+				} catch (readerError) {
+					LOG('Error with nifti-reader-js:', readerError);
+				}
+
+				console.log('NIfTI file loaded successfully:', file.name);
+
+			} catch (error) {
+				console.error('Error reading NIfTI file:', error);
+				alert('Error reading NIfTI file: ' + error.message);
+			} finally {
+				// Clean up
+				document.body.removeChild(fileInput);
+			}
+		});
+
+		// Trigger file dialog
+		fileInput.click();
+	}
+
+	/**
+	 * Helper function to read file as ArrayBuffer
+	 * @param {File} file - The file to read
+	 * @returns {Promise<ArrayBuffer>} The file content as ArrayBuffer
+	 */
+	readFileAsArrayBuffer(file) {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = (event) => resolve(event.target.result);
+			reader.onerror = (error) => reject(error);
+			reader.readAsArrayBuffer(file);
+		});
+	}
+
+	/**
+	 * Read and verify a NIfTI file using nifti-reader-js
+	 * @param {ArrayBuffer} niftiFile - The NIfTI file data
+	 * @param {string} filename - The filename for logging
+	 */
+	readNiftiFile(niftiFile, filename = 'nifti_file') {
+		try {
+			LOG('Reading NIfTI file:', filename ,niftiFile);
+
+			// LOG('nifti', nifti.parse(niftiFile));
+
+			const header = niftiReader.readHeader(niftiFile)
+
+			LOG('nofti-reader-js', header);
+			LOG(niftiReader)
+			LOG('nofti-reader-js2', niftiReader.readImage(header, niftiFile));
+
+
+			LOG(niftiReader)
+			// Parse the NIfTI file
+			const niftiData = nifti.parse(niftiFile);
+
+			// LOG('NIfTI file parsed successfully:', {
+			// 	header: niftiData.header,
+			// 	image: niftiData.image,
+			// 	dimensions: niftiData.header.dims,
+			// 	dataType: niftiData.header.datatype,
+			// 	bitPix: niftiData.header.bitpix,
+			// 	calMin: niftiData.header.cal_min,
+			// 	calMax: niftiData.header.cal_max,
+			// 	description: niftiData.header.descrip
+			// });
+
+			// Log some statistics about the data
+			if (niftiData.image && niftiData.image.length > 0) {
+				const imageData = niftiData.image;
+				const min = Math.min(...imageData);
+				const max = Math.max(...imageData);
+				const mean = imageData.reduce((a, b) => a + b, 0) / imageData.length;
+
+				LOG('NIfTI image data statistics:', {
+					length: imageData.length,
+					min: min,
+					max: max,
+					mean: mean,
+					first10Values: imageData.slice(0, 10),
+					last10Values: imageData.slice(-10)
+				});
+			}
+
+			return niftiData;
+
+		} catch (error) {
+			console.error('Error reading NIfTI file:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * Read a NIfTI file from a File object (e.g., from file input)
+	 * @param {File} file - The NIfTI file to read
+	 * @returns {Promise<Object>} The parsed NIfTI data
+	 */
+	async readNiftiFileFromFile(file) {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+
+			reader.onload = (event) => {
+				try {
+					const arrayBuffer = event.target.result;
+					const niftiData = this.readNiftiFile(arrayBuffer, file.name);
+					resolve(niftiData);
+				} catch (error) {
+					reject(error);
+				}
+			};
+
+			reader.onerror = (error) => {
+				reject(new Error('Failed to read file: ' + error));
+			};
+
+			reader.readAsArrayBuffer(file);
+		});
+	}
+
+	/**
+	 * Convert segmentation data to NIfTI format
+	 * @param {string} filename - Output filename (without extension)
+	 */
+	async convertSegmentationToNifti(filename = 'segmentation')
+	{
+		if (!this.volume_segm || !this.volume_segm.scalarData) {
+			throw new Error('No segmentation data available for conversion');
+		}
+
+		return this.convertVolumeToNifti({
+			filename,
+			includeSegmentation: true,
+			dataType: 8 // int32 for segmentation labels
+		});
 	}
 
 	async createBlurWorkers ()

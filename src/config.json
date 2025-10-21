@@ -44,6 +44,36 @@
     ]
   },
 
+	"web2":
+	{
+		"layout":
+		{
+			"width": 1,
+			"height": 1
+		},
+
+		"features":
+		[
+			"web"
+		],
+
+		"studies":
+		[
+			{
+				"viewports":
+				[
+					{
+						"type": "ORTHOGRAPHIC",
+						"orientation": "axial",
+						"position": 0
+					}
+				],
+
+				"segmentation": true
+			}
+		]
+	},
+
   "segm1":
   {
     "layout":

@@ -256,6 +256,94 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
     download_section.style.left = 1;
     download_section.style.bottom = 1;
 
+		{
+			const download_button = document.createElement('button');
+
+			download_button.className = 'input-element -button';
+			download_button.innerHTML = '\u2193 NR';
+
+			download_button
+				.addEventListener
+				(
+					'click',
+
+					async evt =>
+					{
+						evt.stopPropagation();
+
+						_this.readNII();
+					},
+				);
+
+			download_button.addEventListener('mousedown',evt => evt.stopPropagation());
+			download_button.addEventListener('mousemove',evt => evt.stopPropagation());
+			download_button.addEventListener('mouseup',evt => evt.stopPropagation());
+
+			download_section.appendChild(download_button);
+		}
+
+		{
+			const download_button = document.createElement('button');
+
+			download_button.className = 'input-element -button';
+			download_button.innerHTML = '\u2193 ND';
+
+			download_button
+				.addEventListener
+				(
+					'click',
+
+					async evt =>
+					{
+						evt.stopPropagation();
+
+						_this.convertVolumeToNifti(
+							{
+								filename: `${ _this.imageIds.series_id }.nii`,
+								includeSegmentation: false,
+							}
+						);
+					},
+				);
+
+			download_button.addEventListener('mousedown',evt => evt.stopPropagation());
+			download_button.addEventListener('mousemove',evt => evt.stopPropagation());
+			download_button.addEventListener('mouseup',evt => evt.stopPropagation());
+
+			download_section.appendChild(download_button);
+		}
+
+		{
+			const download_button = document.createElement('button');
+
+			download_button.className = 'input-element -button';
+			download_button.innerHTML = '\u2193 NS';
+
+			download_button
+				.addEventListener
+				(
+					'click',
+
+					async evt =>
+					{
+						evt.stopPropagation();
+
+						_this.convertVolumeToNifti(
+							{
+								filename: `${ _this.imageIds.series_id }.segmentation.nii`,
+								includeSegmentation: true,
+							}
+						);
+					},
+				);
+
+			download_button.addEventListener('mousedown',evt => evt.stopPropagation());
+			download_button.addEventListener('mousemove',evt => evt.stopPropagation());
+			download_button.addEventListener('mouseup',evt => evt.stopPropagation());
+
+			download_section.appendChild(download_button);
+		}
+
     {
       const download_button = document.createElement('button');
 

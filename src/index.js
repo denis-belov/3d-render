@@ -59,17 +59,17 @@ Object.keys(flags)
 			{
 				flags[key] = false;
 			}
-			else if (typeof flags[key] === 'string' && !flags[key].match(/[^0-9.]/g))
-			{
-				if (flags[key].includes('.'))
-				{
-					flags[key] = parseFloat(flags[key]);
-				}
-				else
-				{
-					flags[key] = parseInt(flags[key], 10);
-				}
-			}
+			// else if (typeof flags[key] === 'string' && !flags[key].match(/[^0-9.]/g))
+			// {
+			// 	if (flags[key].includes('.'))
+			// 	{
+			// 		flags[key] = parseFloat(flags[key]);
+			// 	}
+			// 	else
+			// 	{
+			// 		flags[key] = parseInt(flags[key], 10);
+			// 	}
+			// }
 		},
 	);
 
@@ -77,11 +77,11 @@ Object.assign(window, flags);
 
 
 
-if (window.__CONFIG__ === 'web')
+if (window.__CONFIG__ === 'web' || window.__CONFIG__ === 'web2')
 {
 	if (!window.__STUDY__ || typeof window.__STUDY__ !== 'string')
 	{
-		window.__STUDY__ = '20a357aa-4efd13ef-ace04f99-d98d4921-a54d03ee';
+		window.__STUDY__ = '278a4f93-9179ae94-b5ffe988-129e319f-77cda946';
 	}
 
 	// if (!window.__MARKUP_SRC__)
@@ -115,7 +115,7 @@ window.addEventListener
 		// #ifdef WASM
 		{
 			const { default: WasmWrapper } = await import('../../../renderity/wasm-wrapper/src');
-			const { default: wasm_code } = await import('../../../renderity/cpp-webpack-loader!./cpp/entry-wasm32');
+			const { default: wasm_code } = await import('../../../renderity/__deprecated__/cpp-webpack-loader!./cpp/entry-wasm32');
 
 			self.wasm = new WasmWrapper();
 

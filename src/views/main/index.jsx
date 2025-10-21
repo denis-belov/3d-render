@@ -12,7 +12,8 @@ import WADORSHeaderProvider from '../../js/cornerstonejs/utils/demo/helpers/WADO
 
 // import initCornerstone from '../../js/cornerstonejs/utils/demo/helpers/initCornerstone';
 
-import { getStudyAPI, getSerieAPI, getFileAPI } from '../../js/api';
+import { getStudyAPI, getSerieAPI, getFileAPI, getFileAPI2 } from '../../js/api';
+// import { getStudyAPI, getSerieAPI, getFileAPI } from '../../js/api2';
 
 import Serie from '../../js/serie';
 
@@ -28,6 +29,145 @@ const DEFAULT_ORIENTATIONS =
 	'sagittal',
 	'coronal',
 ];
+
+
+
+function toNumber(val) {
+	if (Array.isArray(val)) {
+		return [...val].map(v => (v !== undefined ? Number(v) : v));
+	} else {
+		return val !== undefined ? Number(val) : val;
+	}
+}
+
+function getPixelSpacingInformation(instance) {
+	// See http://gdcm.sourceforge.net/wiki/index.php/Imager_Pixel_Spacing
+
+	// TODO: Add manual calibration
+
+	// TODO: Use ENUMS from dcmjs
+	const projectionRadiographSOPClassUIDs = [
+		'1.2.840.10008.5.1.4.1.1.1', //	CR Image Storage
+		'1.2.840.10008.5.1.4.1.1.1.1', //	Digital X-Ray Image Storage – for Presentation
+		'1.2.840.10008.5.1.4.1.1.1.1.1', //	Digital X-Ray Image Storage – for Processing
+		'1.2.840.10008.5.1.4.1.1.1.2', //	Digital Mammography X-Ray Image Storage – for Presentation
+		'1.2.840.10008.5.1.4.1.1.1.2.1', //	Digital Mammography X-Ray Image Storage – for Processing
+		'1.2.840.10008.5.1.4.1.1.1.3', //	Digital Intra – oral X-Ray Image Storage – for Presentation
+		'1.2.840.10008.5.1.4.1.1.1.3.1', //	Digital Intra – oral X-Ray Image Storage – for Processing
+		'1.2.840.10008.5.1.4.1.1.12.1', //	X-Ray Angiographic Image Storage
+		'1.2.840.10008.5.1.4.1.1.12.1.1', //	Enhanced XA Image Storage
+		'1.2.840.10008.5.1.4.1.1.12.2', //	X-Ray Radiofluoroscopic Image Storage
+		'1.2.840.10008.5.1.4.1.1.12.2.1', //	Enhanced XRF Image Storage
+		'1.2.840.10008.5.1.4.1.1.12.3', // X-Ray Angiographic Bi-plane Image Storage	Retired
+	];
+
+	const {
+		PixelSpacing,
+		ImagerPixelSpacing,
+		SOPClassUID,
+		PixelSpacingCalibrationType,
+		PixelSpacingCalibrationDescription,
+		EstimatedRadiographicMagnificationFactor,
+		SequenceOfUltrasoundRegions,
+	} = instance;
+	const isProjection = projectionRadiographSOPClassUIDs.includes(SOPClassUID);
+
+	const TYPES = {
+		NOT_APPLICABLE: 'NOT_APPLICABLE',
+		UNKNOWN: 'UNKNOWN',
+		CALIBRATED: 'CALIBRATED',
+		DETECTOR: 'DETECTOR',
+	};
+
+	if (isProjection && !ImagerPixelSpacing) {
+		// If only Pixel Spacing is present, and this is a projection radiograph,
+		// PixelSpacing should be used, but the user should be informed that
+		// what it means is unknown
+		return {
+			PixelSpacing,
+			type: TYPES.UNKNOWN,
+			isProjection,
+		};
+	} else if (
+		PixelSpacing &&
+		ImagerPixelSpacing &&
+		PixelSpacing === ImagerPixelSpacing
+	) {
+		// If Imager Pixel Spacing and Pixel Spacing are present and they have the same values,
+		// then the user should be informed that the measurements are at the detector plane
+		return {
+			PixelSpacing,
+			type: TYPES.DETECTOR,
+			isProjection,
+		};
+	} else if (
+		PixelSpacing &&
+		ImagerPixelSpacing &&
+		PixelSpacing !== ImagerPixelSpacing
+	) {
+		// If Imager Pixel Spacing and Pixel Spacing are present and they have different values,
+		// then the user should be informed that these are "calibrated"
+		// (in some unknown manner if Pixel Spacing Calibration Type and/or
+		// Pixel Spacing Calibration Description are absent)
+		return {
+			PixelSpacing,
+			type: TYPES.CALIBRATED,
+			isProjection,
+			PixelSpacingCalibrationType,
+			PixelSpacingCalibrationDescription,
+		};
+	} else if (!PixelSpacing && ImagerPixelSpacing) {
+		let CorrectedImagerPixelSpacing = ImagerPixelSpacing;
+		if (EstimatedRadiographicMagnificationFactor) {
+			// Note that in IHE Mammo profile compliant displays, the value of Imager Pixel Spacing is required to be corrected by
+			// Estimated Radiographic Magnification Factor and the user informed of that.
+			// TODO: should this correction be done before all of this logic?
+			CorrectedImagerPixelSpacing = ImagerPixelSpacing.map(
+				pixelSpacing => pixelSpacing / EstimatedRadiographicMagnificationFactor
+			);
+		} else {
+			console.info(
+				'EstimatedRadiographicMagnificationFactor was not present. Unable to correct ImagerPixelSpacing.'
+			);
+		}
+
+		return {
+			PixelSpacing: CorrectedImagerPixelSpacing,
+			isProjection,
+		};
+	} else if (
+		SequenceOfUltrasoundRegions &&
+		typeof SequenceOfUltrasoundRegions === 'object'
+	) {
+		const { PhysicalDeltaX, PhysicalDeltaY } = SequenceOfUltrasoundRegions;
+		const USPixelSpacing = [PhysicalDeltaX * 10, PhysicalDeltaY * 10];
+
+		return {
+			PixelSpacing: USPixelSpacing,
+		};
+	} else if (
+		SequenceOfUltrasoundRegions &&
+		Array.isArray(SequenceOfUltrasoundRegions) &&
+		SequenceOfUltrasoundRegions.length > 1
+	) {
+		console.warn(
+			'Sequence of Ultrasound Regions > one entry. This is not yet implemented, all measurements will be shown in pixels.'
+		);
+	} else if (isProjection === false && !ImagerPixelSpacing) {
+		// If only Pixel Spacing is present, and this is not a projection radiograph,
+		// we can stop here
+		return {
+			PixelSpacing,
+			type: TYPES.NOT_APPLICABLE,
+			isProjection,
+		};
+	}
+
+	console.info(
+		'Unknown combination of PixelSpacing and ImagerPixelSpacing identified. Unable to determine spacing.'
+	);
+}
+
 
 
 
@@ -82,11 +222,16 @@ const getImageSrcFromImageIdWeb = async instance_uuid =>
 	const file = new File([ data ], instance_uuid, { type: 'application/dicom+xml' });
 
 	const images =
-		(await Promise.allSettled(convertFilesToImages([ file ])))
+			(await Promise.allSettled(convertFilesToImages([ file ])))
 			.filter(promise => (promise.status === 'fulfilled'))
 			.map(promise => promise.value)
 			.filter(value => value)
 			.map(({ imageId }) => imageId);
+
+	if (!images.length)
+	{
+		return null;
+	}
 
 	return getImageSrcFromImageId(images[0]);
 };
@@ -118,11 +263,19 @@ const convertFilesToImages = (files) =>
 				// 	return null;
 				// }
 
+
+
 				const image_id = cornerstoneWADOImageLoader.wadouri.fileManager.add(file);
 
 				file.image_id = image_id;
 
 				return cornerstone.imageLoader.loadImage(image_id);
+
+
+
+				// const image_id = `wadors:${file.url}`;
+
+				// return cornerstone.imageLoader.loadImage(image_id);
 			},
 		)
 };
@@ -130,6 +283,8 @@ const convertFilesToImages = (files) =>
 const groupImagesToSeries = (images, files) =>
 {
 	const image_series = {};
+
+	const image_instances = {};
 
 	images
 		.forEach
@@ -140,6 +295,10 @@ const groupImagesToSeries = (images, files) =>
 
 				const image_instance_data = cornerstone.metaData.get('instance', imageId);
 
+				image_instances[imageId] = image_instance_data;
+
+				// LOG(image_instance_data)
+
 				cornerstoneWADOImageLoader.wadors.metaDataManager
 					.add
 					(
@@ -147,12 +306,14 @@ const groupImagesToSeries = (images, files) =>
 						image_instance_data
 					);
 
-				const image_series_id =
-					`${ image_instance_data.SeriesInstanceUID }
-					${ image_instance_data.SeriesNumber }
-					${ image_instance_data.Columns }
-					${ image_instance_data.Rows }
-					${ image_instance_data.ImageOrientationPatient?.map(elm => Math.round(elm)) || '' }`;
+				// const image_series_id =
+				// 	`${ image_instance_data.SeriesInstanceUID }
+				// 	${ image_instance_data.SeriesNumber }
+				// 	${ image_instance_data.Columns }
+				// 	${ image_instance_data.Rows }
+				// 	${ image_instance_data.ImageOrientationPatient?.map(elm => Math.round(elm)) || '' }`;
+
+				const image_series_id = image_instance_data.SeriesInstanceUID;
 
 				image_series[image_series_id] ||= [];
 
@@ -171,6 +332,76 @@ const groupImagesToSeries = (images, files) =>
 				image_series[image_series_id].files.push(files.find(file => file.image_id === imageId));
 			},
 		);
+
+	cornerstone.metaData.addProvider(
+		(type, _imageId) =>
+		{
+			const instance = image_instances[_imageId];
+
+			if (type === 'voiLutModule')
+			{
+				const { WindowCenter, WindowWidth, VOILUTFunction } = instance;
+				if (WindowCenter == null || WindowWidth == null) {
+					return;
+				}
+				const windowCenter = Array.isArray(WindowCenter) ? WindowCenter : [WindowCenter];
+				const windowWidth = Array.isArray(WindowWidth) ? WindowWidth : [WindowWidth];
+
+				const metadata = {
+					windowCenter: toNumber(windowCenter),
+					windowWidth: toNumber(windowWidth),
+					voiLUTFunction: VOILUTFunction,
+				};
+
+				return metadata;
+			}
+			else if (type === 'imagePlaneModule')
+			{
+				const { ImageOrientationPatient } = instance;
+
+				// Fallback for DX images.
+				// TODO: We should use the rest of the results of this function
+				// to update the UI somehow
+				const { PixelSpacing } = getPixelSpacingInformation(instance);
+
+				let rowPixelSpacing;
+				let columnPixelSpacing;
+
+				let rowCosines;
+				let columnCosines;
+
+				if (PixelSpacing) {
+					rowPixelSpacing = PixelSpacing[0];
+					columnPixelSpacing = PixelSpacing[1];
+				}
+
+				if (ImageOrientationPatient) {
+					rowCosines = ImageOrientationPatient.slice(0, 3);
+					columnCosines = ImageOrientationPatient.slice(3, 6);
+				}
+
+				const metadata = {
+					frameOfReferenceUID: instance.FrameOfReferenceUID,
+					rows: toNumber(instance.Rows),
+					columns: toNumber(instance.Columns),
+					imageOrientationPatient: toNumber(ImageOrientationPatient),
+					rowCosines: toNumber(rowCosines || [0, 1, 0]),
+					columnCosines: toNumber(columnCosines || [0, 0, -1]),
+					imagePositionPatient: toNumber(
+						instance.ImagePositionPatient || [0, 0, 0]
+					),
+					sliceThickness: toNumber(instance.SliceThickness),
+					sliceLocation: toNumber(instance.SliceLocation),
+					pixelSpacing: toNumber(PixelSpacing || 1),
+					rowPixelSpacing: toNumber(rowPixelSpacing || 1),
+					columnPixelSpacing: toNumber(columnPixelSpacing || 1),
+				};
+
+				return metadata;
+			}
+		},
+		5000
+	);
 
 	return image_series;
 };
@@ -194,7 +425,7 @@ export async function getWebSeries (study_uuid)
 {
 	const { Series } = await getStudyAPI(study_uuid);
 
-	const image_series = {};
+	let image_series = {};
 
 	await Promise.all
 	(
@@ -223,6 +454,12 @@ export async function getWebSeries (study_uuid)
 				},
 			),
 	);
+
+	if (window.__SERIES__)
+	{
+		const key = Object.keys(image_series).find(key => image_series[key].series_id === window.__SERIES__);
+		image_series = { [key]: image_series[key] };
+	}
 
 	return image_series;
 }
@@ -679,6 +916,7 @@ export default class MainView extends React.PureComponent
 																														<div>Protocol name: {this.state[`image_series${ study_index }`][key].protocol_name}</div>
 																														<div>Modality: {this.state[`image_series${ study_index }`][key].modality}</div>
 																														<div>Series description: {this.state[`image_series${ study_index }`][key].series_description}</div>
+																														<div>Instance number: {this.state[`image_series${ study_index }`][key].length}</div>
 																													</a>,
 																											)
 																									}

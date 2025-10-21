@@ -4,7 +4,10 @@
 **/assets-debug
 out
 _NPM_START.sh
+.DS_Store
 
 # deploy repo
 **/segm
 **/segm-web
+**/segm-4
+**/segm-4__
