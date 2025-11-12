@@ -1,19 +1,11 @@
 import React from 'react';
 
-// import vtkColorMaps from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/ColorMaps';
-
 import * as cornerstone from '@cornerstonejs/core';
-// import cornerstoneWADOImageLoader from 'cornerstone-wado-image-loader';
-import cornerstoneWADOImageLoader from '@cornerstonejs/dicom-image-loader';
-// import cornerstoneWADOImageLoader_610 from 'url-loader!cornerstone-wado-image-loader/dist/610.bundle.min.worker.js';
-// import cornerstoneWADOImageLoader_888 from 'url-loader!cornerstone-wado-image-loader/dist/888.bundle.min.worker.js';
+import dicomImageLoader from '@cornerstonejs/dicom-image-loader';
 
 import WADORSHeaderProvider from '../../js/cornerstonejs/utils/demo/helpers/WADORSHeaderProvider';
 
-// import initCornerstone from '../../js/cornerstonejs/utils/demo/helpers/initCornerstone';
-
-import { getStudyAPI, getSerieAPI, getFileAPI, getFileAPI2 } from '../../js/api';
-// import { getStudyAPI, getSerieAPI, getFileAPI } from '../../js/api2';
+import { getStudyAPI, getSerieAPI, getFileAPI } from '../../js/api';
 
 import Serie from '../../js/serie';
 
@@ -23,151 +15,7 @@ import _config from '../../config.json';
 
 
 
-const DEFAULT_ORIENTATIONS =
-[
-	'axial',
-	'sagittal',
-	'coronal',
-];
-
-
-
-function toNumber(val) {
-	if (Array.isArray(val)) {
-		return [...val].map(v => (v !== undefined ? Number(v) : v));
-	} else {
-		return val !== undefined ? Number(val) : val;
-	}
-}
-
-function getPixelSpacingInformation(instance) {
-	// See http://gdcm.sourceforge.net/wiki/index.php/Imager_Pixel_Spacing
-
-	// TODO: Add manual calibration
-
-	// TODO: Use ENUMS from dcmjs
-	const projectionRadiographSOPClassUIDs = [
-		'1.2.840.10008.5.1.4.1.1.1', //	CR Image Storage
-		'1.2.840.10008.5.1.4.1.1.1.1', //	Digital X-Ray Image Storage – for Presentation
-		'1.2.840.10008.5.1.4.1.1.1.1.1', //	Digital X-Ray Image Storage – for Processing
-		'1.2.840.10008.5.1.4.1.1.1.2', //	Digital Mammography X-Ray Image Storage – for Presentation
-		'1.2.840.10008.5.1.4.1.1.1.2.1', //	Digital Mammography X-Ray Image Storage – for Processing
-		'1.2.840.10008.5.1.4.1.1.1.3', //	Digital Intra – oral X-Ray Image Storage – for Presentation
-		'1.2.840.10008.5.1.4.1.1.1.3.1', //	Digital Intra – oral X-Ray Image Storage – for Processing
-		'1.2.840.10008.5.1.4.1.1.12.1', //	X-Ray Angiographic Image Storage
-		'1.2.840.10008.5.1.4.1.1.12.1.1', //	Enhanced XA Image Storage
-		'1.2.840.10008.5.1.4.1.1.12.2', //	X-Ray Radiofluoroscopic Image Storage
-		'1.2.840.10008.5.1.4.1.1.12.2.1', //	Enhanced XRF Image Storage
-		'1.2.840.10008.5.1.4.1.1.12.3', // X-Ray Angiographic Bi-plane Image Storage	Retired
-	];
-
-	const {
-		PixelSpacing,
-		ImagerPixelSpacing,
-		SOPClassUID,
-		PixelSpacingCalibrationType,
-		PixelSpacingCalibrationDescription,
-		EstimatedRadiographicMagnificationFactor,
-		SequenceOfUltrasoundRegions,
-	} = instance;
-	const isProjection = projectionRadiographSOPClassUIDs.includes(SOPClassUID);
-
-	const TYPES = {
-		NOT_APPLICABLE: 'NOT_APPLICABLE',
-		UNKNOWN: 'UNKNOWN',
-		CALIBRATED: 'CALIBRATED',
-		DETECTOR: 'DETECTOR',
-	};
-
-	if (isProjection && !ImagerPixelSpacing) {
-		// If only Pixel Spacing is present, and this is a projection radiograph,
-		// PixelSpacing should be used, but the user should be informed that
-		// what it means is unknown
-		return {
-			PixelSpacing,
-			type: TYPES.UNKNOWN,
-			isProjection,
-		};
-	} else if (
-		PixelSpacing &&
-		ImagerPixelSpacing &&
-		PixelSpacing === ImagerPixelSpacing
-	) {
-		// If Imager Pixel Spacing and Pixel Spacing are present and they have the same values,
-		// then the user should be informed that the measurements are at the detector plane
-		return {
-			PixelSpacing,
-			type: TYPES.DETECTOR,
-			isProjection,
-		};
-	} else if (
-		PixelSpacing &&
-		ImagerPixelSpacing &&
-		PixelSpacing !== ImagerPixelSpacing
-	) {
-		// If Imager Pixel Spacing and Pixel Spacing are present and they have different values,
-		// then the user should be informed that these are "calibrated"
-		// (in some unknown manner if Pixel Spacing Calibration Type and/or
-		// Pixel Spacing Calibration Description are absent)
-		return {
-			PixelSpacing,
-			type: TYPES.CALIBRATED,
-			isProjection,
-			PixelSpacingCalibrationType,
-			PixelSpacingCalibrationDescription,
-		};
-	} else if (!PixelSpacing && ImagerPixelSpacing) {
-		let CorrectedImagerPixelSpacing = ImagerPixelSpacing;
-		if (EstimatedRadiographicMagnificationFactor) {
-			// Note that in IHE Mammo profile compliant displays, the value of Imager Pixel Spacing is required to be corrected by
-			// Estimated Radiographic Magnification Factor and the user informed of that.
-			// TODO: should this correction be done before all of this logic?
-			CorrectedImagerPixelSpacing = ImagerPixelSpacing.map(
-				pixelSpacing => pixelSpacing / EstimatedRadiographicMagnificationFactor
-			);
-		} else {
-			console.info(
-				'EstimatedRadiographicMagnificationFactor was not present. Unable to correct ImagerPixelSpacing.'
-			);
-		}
-
-		return {
-			PixelSpacing: CorrectedImagerPixelSpacing,
-			isProjection,
-		};
-	} else if (
-		SequenceOfUltrasoundRegions &&
-		typeof SequenceOfUltrasoundRegions === 'object'
-	) {
-		const { PhysicalDeltaX, PhysicalDeltaY } = SequenceOfUltrasoundRegions;
-		const USPixelSpacing = [PhysicalDeltaX * 10, PhysicalDeltaY * 10];
-
-		return {
-			PixelSpacing: USPixelSpacing,
-		};
-	} else if (
-		SequenceOfUltrasoundRegions &&
-		Array.isArray(SequenceOfUltrasoundRegions) &&
-		SequenceOfUltrasoundRegions.length > 1
-	) {
-		console.warn(
-			'Sequence of Ultrasound Regions > one entry. This is not yet implemented, all measurements will be shown in pixels.'
-		);
-	} else if (isProjection === false && !ImagerPixelSpacing) {
-		// If only Pixel Spacing is present, and this is not a projection radiograph,
-		// we can stop here
-		return {
-			PixelSpacing,
-			type: TYPES.NOT_APPLICABLE,
-			isProjection,
-		};
-	}
-
-	console.info(
-		'Unknown combination of PixelSpacing and ImagerPixelSpacing identified. Unable to determine spacing.'
-	);
-}
-
+const DEFAULT_ORIENTATIONS = [ 'AXIAL', 'SAGITTAL', 'CORONAL' ];
 
 
 
@@ -182,29 +30,6 @@ window.__CONFIG__ = CONFIG;
 
 
 
-// cornerstoneWADOImageLoader.webWorkerManager
-// 	.initialize
-// 	({
-// 		// maxWebWorkers: navigator.hardwareConcurrency || 1,
-// 		// startWebWorkersOnDemand : true,
-
-// 		webWorkerTaskPaths:
-// 		[
-// 			cornerstoneWADOImageLoader_610,
-// 			cornerstoneWADOImageLoader_888,
-// 		],
-
-// 		taskConfiguration:
-// 		{
-// 			decodeTask:
-// 			{
-// 				initializeCodecsOnStartup: false,
-// 				usePDFJS: false,
-// 			},
-// 		},
-// 	});
-
-
 
 const getImageSrcFromImageId = async imageId =>
 {
@@ -215,67 +40,25 @@ const getImageSrcFromImageId = async imageId =>
 	return canvas.toDataURL();
 };
 
-const getImageSrcFromImageIdWeb = async instance_uuid =>
-{
-	const data = await getFileAPI(instance_uuid);
-
-	const file = new File([ data ], instance_uuid, { type: 'application/dicom+xml' });
-
-	const images =
-			(await Promise.allSettled(convertFilesToImages([ file ])))
-			.filter(promise => (promise.status === 'fulfilled'))
-			.map(promise => promise.value)
-			.filter(value => value)
-			.map(({ imageId }) => imageId);
-
-	if (!images.length)
-	{
-		return null;
-	}
-
-	return getImageSrcFromImageId(images[0]);
-};
-
-const convertFilesToImages = (files) =>
+const convertFilesToImages = (files, image_ids) =>
 {
 	return Array.from(files)
 		.map
 		(
-			async file =>
+			async (file, index) =>
 			{
-				// if (file.name === 'segm')
-				// {
-				// 	const _data =
-				// 		await new Promise
-				// 		(
-				// 			resolve =>
-				// 			{
-				// 				var fr = new FileReader();
+				const image_id = dicomImageLoader.wadouri.fileManager.add(file);
 
-				// 				fr.onload = () => resolve(fr.result);
-
-				// 				fr.readAsArrayBuffer(file);
-				// 			},
-				// 		);
-
-				// 	window.__TEST__ = _data;
-
-				// 	return null;
-				// }
-
-
-
-				const image_id = cornerstoneWADOImageLoader.wadouri.fileManager.add(file);
+				WADORSHeaderProvider.addInstance(image_id, await file.arrayBuffer());
 
 				file.image_id = image_id;
 
-				return cornerstone.imageLoader.loadImage(image_id);
+				if (image_ids)
+				{
+					image_ids[index] = image_id;
+				}
 
-
-
-				// const image_id = `wadors:${file.url}`;
-
-				// return cornerstone.imageLoader.loadImage(image_id);
+				return dicomImageLoader.wadouri.loadFileRequest(image_id);
 			},
 		)
 };
@@ -284,22 +67,14 @@ const groupImagesToSeries = (images, files) =>
 {
 	const image_series = {};
 
-	const image_instances = {};
-
 	images
 		.forEach
 		(
 			({ imageId, data }, index) =>
 			{
-				WADORSHeaderProvider.addInstance(imageId, data.byteArray.buffer);
-
 				const image_instance_data = cornerstone.metaData.get('instance', imageId);
 
-				image_instances[imageId] = image_instance_data;
-
-				// LOG(image_instance_data)
-
-				cornerstoneWADOImageLoader.wadors.metaDataManager
+				dicomImageLoader.wadors.metaDataManager
 					.add
 					(
 						imageId,
@@ -332,76 +107,6 @@ const groupImagesToSeries = (images, files) =>
 				image_series[image_series_id].files.push(files.find(file => file.image_id === imageId));
 			},
 		);
-
-	cornerstone.metaData.addProvider(
-		(type, _imageId) =>
-		{
-			const instance = image_instances[_imageId];
-
-			if (type === 'voiLutModule')
-			{
-				const { WindowCenter, WindowWidth, VOILUTFunction } = instance;
-				if (WindowCenter == null || WindowWidth == null) {
-					return;
-				}
-				const windowCenter = Array.isArray(WindowCenter) ? WindowCenter : [WindowCenter];
-				const windowWidth = Array.isArray(WindowWidth) ? WindowWidth : [WindowWidth];
-
-				const metadata = {
-					windowCenter: toNumber(windowCenter),
-					windowWidth: toNumber(windowWidth),
-					voiLUTFunction: VOILUTFunction,
-				};
-
-				return metadata;
-			}
-			else if (type === 'imagePlaneModule')
-			{
-				const { ImageOrientationPatient } = instance;
-
-				// Fallback for DX images.
-				// TODO: We should use the rest of the results of this function
-				// to update the UI somehow
-				const { PixelSpacing } = getPixelSpacingInformation(instance);
-
-				let rowPixelSpacing;
-				let columnPixelSpacing;
-
-				let rowCosines;
-				let columnCosines;
-
-				if (PixelSpacing) {
-					rowPixelSpacing = PixelSpacing[0];
-					columnPixelSpacing = PixelSpacing[1];
-				}
-
-				if (ImageOrientationPatient) {
-					rowCosines = ImageOrientationPatient.slice(0, 3);
-					columnCosines = ImageOrientationPatient.slice(3, 6);
-				}
-
-				const metadata = {
-					frameOfReferenceUID: instance.FrameOfReferenceUID,
-					rows: toNumber(instance.Rows),
-					columns: toNumber(instance.Columns),
-					imageOrientationPatient: toNumber(ImageOrientationPatient),
-					rowCosines: toNumber(rowCosines || [0, 1, 0]),
-					columnCosines: toNumber(columnCosines || [0, 0, -1]),
-					imagePositionPatient: toNumber(
-						instance.ImagePositionPatient || [0, 0, 0]
-					),
-					sliceThickness: toNumber(instance.SliceThickness),
-					sliceLocation: toNumber(instance.SliceLocation),
-					pixelSpacing: toNumber(PixelSpacing || 1),
-					rowPixelSpacing: toNumber(rowPixelSpacing || 1),
-					columnPixelSpacing: toNumber(columnPixelSpacing || 1),
-				};
-
-				return metadata;
-			}
-		},
-		5000
-	);
 
 	return image_series;
 };
@@ -459,22 +164,31 @@ export async function getWebSeries (study_uuid)
 	{
 		const key = Object.keys(image_series).find(key => image_series[key].series_id === window.__SERIES__);
 		image_series = { [key]: image_series[key] };
+
+		// const key1 = Object.keys(image_series).find(key => image_series[key].series_id === window.__SERIES__);
+		// const key2 = Object.keys(image_series).find(key => image_series[key].series_id === '1.3.46.670589.11.47889.5.0.8236.2025082717214460931.15');
+		// image_series = { [key1]: image_series[key1], [key2]: image_series[key2] };
+
+		// const key = Object.keys(image_series).find(key => image_series[key].series_id === '1.2.826.0.1.3680043.8.498.84337019692412110214144269344195856024');
+		// image_series = { [key]: image_series[key] };
+
+		// let _image_series = {};
+
+		// Object.keys(image_series)
+		// 	.slice(0, 3)
+		// 	.forEach
+		// 	(
+		// 		key =>
+		// 		{
+		// 			_image_series[key] = image_series[key];
+		// 		},
+		// 	);
+
+		// image_series = _image_series;
 	}
 
 	return image_series;
 }
-
-
-
-// document.querySelector('#root').addEventListener
-// (
-// 	'wheel',
-
-// 	(evt) =>
-// 	{
-// 		evt.preventDefault();
-// 	},
-// );
 
 
 
@@ -484,11 +198,6 @@ export default class MainView extends React.PureComponent
 	{
 		super();
 
-		if (window.__CONFIG__.features?.includes('web'))
-		{
-			this.start_apps = [];
-		}
-
 		this.state =
 		{
 			item4_toggle: 1,
@@ -497,67 +206,19 @@ export default class MainView extends React.PureComponent
 		};
 	}
 
-	// async componentWillMount ()
-	// {
-	// 	await initCornerstone();
-
-	// 	this.series = new Series();
-
-	// 	await this.series.init();
-	// }
-
 	async componentDidMount ()
 	{
 		if (window.__CONFIG__.features?.includes('web'))
 		{
-			this.start_apps
-				.forEach
-				(
-					start_app =>
-					{
-						this.startApp(window.__STUDY__, ...start_app);
-					},
-				);
+			for (let study_index = 0; study_index < CONFIG.studies.length; ++study_index)
+			{
+				await this.startApp(window.__STUDY__, study_index, CONFIG.studies[study_index]);
+			}
 		}
 	}
 
 	async showSerie (...args)
 	{
-		if (window.__CONFIG__.features?.includes('web'))
-		{
-			const serie = args[0];
-
-			await Promise.all
-			(
-				args[0].Instances
-					.map
-					(
-						instance_uuid =>
-						{
-							const pr = getFileAPI(instance_uuid)
-								.then
-								(
-									data => args[0].push(new File([ data ], instance_uuid, { type: 'application/dicom+xml' })),
-								);
-
-							return pr;
-						},
-					),
-			);
-
-			const images =
-				(await Promise.allSettled(convertFilesToImages(args[0])))
-					.filter(promise => (promise.status === 'fulfilled'))
-					.map(promise => promise.value)
-					.filter(value => value)
-					.map(({ imageId }) => imageId);
-
-			args[0].length = 0;
-			args[0].push(...images);
-		}
-
-		// this.series.createVolumeFromImages(...args);
-
 		const serie = new Serie();
 
 		if ((args[0].modality !== 'MR' && args[0].modality !== 'CT') || args[0].length === 1)
@@ -589,7 +250,7 @@ export default class MainView extends React.PureComponent
 					},
 				},
 
-				() => serie.init(...args, this)
+				() => serie.init(...args, this),
 			);
 		}
 		else
@@ -616,50 +277,61 @@ export default class MainView extends React.PureComponent
 
 							defaultOptions:
 							{
-								orientation: cornerstone.CONSTANTS.MPR_CAMERA_VALUES[viewport.orientation],
+								orientation: cornerstone.Enums.OrientationAxis[viewport.orientation],
 								background: [ 0.15, 0.22, 0.3 ],
 							},
 						};
 					},
 				);
 
-		let image_series = null;
+		const image_series = window.__CONFIG__.features?.includes('web') ? (await getWebSeries(param1)) : (await convertFilesToSeries(param1));
 
 		if (window.__CONFIG__.features?.includes('web'))
 		{
-			const study_uuid = param1;
-
-			image_series = await getWebSeries(study_uuid);
-
-			for (let key in image_series)
+			for (const series of Object.values(image_series))
 			{
-				const instance_index = Math.floor(image_series[key].Instances.length / 2);
+				const files = [];
 
-				image_series[key].thumbnail = await getImageSrcFromImageIdWeb(image_series[key].Instances[instance_index]);
+				await Promise.all
+				(
+					series.Instances
+						.map
+						(
+							instance_uuid =>
+							{
+								const pr = getFileAPI(instance_uuid)
+									.then
+									(
+										data => files.push(new File([ data ], `${ instance_uuid }.dcm`, { type: 'application/dicom' })),
+									);
+
+								return pr;
+							},
+						),
+				);
+
+				const image_ids = new Array(files.length);
+
+				await Promise.allSettled(convertFilesToImages(files, image_ids));
+
+				series.files = files;
+
+				series.push(...image_ids);
 			}
 		}
-		else
+
+		for (let key in image_series)
 		{
-			const files = param1;
+			const instance_index = Math.floor(image_series[key].length / 2);
 
-			image_series = await convertFilesToSeries(files);
-
-			for (let key in image_series)
-			{
-				const instance_index = Math.floor(image_series[key].length / 2);
-
-				image_series[key].thumbnail = await getImageSrcFromImageId(image_series[key][instance_index]);
-			}
+			image_series[key].thumbnail = await getImageSrcFromImageId(image_series[key][instance_index]);
 		}
 
 		const series_keys = Object.keys(image_series);
 
-		// viewport_inputs.forEach(vi => cornerstone.getRenderingEngine('CORNERSTONE_RENDERING_ENGINE').enableElement(vi));
-
 		const showSerie =
 			async serie =>
 			{
-				// await this.showSerie(image_series[serie], `VOLUME${ study_index }`, viewport_inputs, (study_index === 0))
 				await this.showSerie(image_series[serie], `VOLUME${ study_index }`, viewport_inputs, study.segmentation, study_index)
 			};
 
@@ -667,13 +339,9 @@ export default class MainView extends React.PureComponent
 		{
 			this.setState({ [ `loading${ study_index }` ]: true });
 
-			// await this.showSerie(image_series[series_keys[0]], `VOLUME${ study_index }`, viewport_inputs, (study_index === 1));
 			showSerie(series_keys[0]);
 
 			this.setState({ [ `imagesAreLoaded${ study_index }` ]: true, [ `loading${ study_index }` ]: false });
-
-			// TODO: why second viewport isn't being rendered when images loaded ?
-			// cornerstone.getRenderingEngine('CORNERSTONE_RENDERING_ENGINE').renderViewports(viewport_inputs.map(({ viewportId }) => viewportId));
 		}
 		else
 		{
@@ -714,7 +382,7 @@ export default class MainView extends React.PureComponent
 
 							defaultOptions:
 							{
-								orientation: cornerstone.CONSTANTS.MPR_CAMERA_VALUES[viewport.orientation],
+								orientation: cornerstone.Enums.OrientationAxis[viewport.orientation],
 								background: [ 0.15, 0.22, 0.3 ],
 							},
 						};
@@ -820,11 +488,6 @@ export default class MainView extends React.PureComponent
 									{
 										const main_study = (study_index === 0);
 
-										if (window.__CONFIG__.features?.includes('web'))
-										{
-											this.start_apps.push([ study_index, study ]);
-										}
-
 										study.viewports
 											.forEach
 											(
@@ -865,21 +528,37 @@ export default class MainView extends React.PureComponent
 																					{
 																						!study.hidePlaceholder ?
 																							<>
-																								<div
-																									className="viewport_grid-canvas_panel-placeholder-inner"
-																									style={{ width: '50%' }}
-																									onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
-																								>
-																									{ CONFIG.features?.includes('web') ? <div className="viewport_grid-loader" /> : <span>Click to load files</span> }
-																								</div>
+																								{
+																									CONFIG.features?.includes('web') ?
 
-																								<div
-																									className="viewport_grid-canvas_panel-placeholder-inner"
-																									style={{ width: '50%', backgroundColor: 'rgba(0, 0, 0, 0.0625)' }}
-																									onClick={() => document.querySelector(`#data-input-dir-${ study_index }`).click()}
-																								>
-																									{ CONFIG.features?.includes('web') ? <div className="viewport_grid-loader" /> : <span>Click to load directories</span> }
-																								</div>
+																										<>
+																											<div
+																												className="viewport_grid-canvas_panel-placeholder-inner"
+																												style={{ width: '100%' }}
+																												onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
+																											>
+																												<div className="viewport_grid-loader" />
+																											</div>
+																										</> :
+
+																										<>
+																											<div
+																												className="viewport_grid-canvas_panel-placeholder-inner"
+																												style={{ width: '50%' }}
+																												onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
+																											>
+																												<span>Click to load files</span>
+																											</div>
+
+																											<div
+																												className="viewport_grid-canvas_panel-placeholder-inner"
+																												style={{ width: '50%', backgroundColor: 'rgba(0, 0, 0, 0.0625)' }}
+																												onClick={() => document.querySelector(`#data-input-dir-${ study_index }`).click()}
+																											>
+																												<span>Click to load directories</span>
+																											</div>
+																										</>
+																								}
 																							</>
 
 																							: null
@@ -907,8 +586,6 @@ export default class MainView extends React.PureComponent
 																															await this.state[`showSerie${ study_index }`](key);
 
 																															this.setState({ [ `modal${ study_index }` ]: false, [ `imagesAreLoaded${ study_index }` ]: true, [ `loading${ study_index }` ]: false });
-
-																															// cornerstone.getRenderingEngine('CORNERSTONE_RENDERING_ENGINE').renderViewports(this.state[`viewport_inputs${ index }`].map(({ viewportId }) => viewportId));
 																														}}
 																													>
 																														<img src={this.state[`image_series${ study_index }`][key].thumbnail} />

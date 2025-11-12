@@ -174,14 +174,14 @@ body
       height: 20px;
       right: 0;
       bottom: 0;
-      background-image: url('./scss/settings.svg');
+      background-image: url('./scss/gear.svg');
       background-size: 16px;
       background-position: 2px 2px;
       background-repeat: no-repeat;
 
       &:hover
       {
-        background-image: url('./scss/settings-hover.svg');
+        background-image: url('./scss/gear.svg');
       }
     }
 

@@ -27,7 +27,6 @@
 	"globals":
 	{
 		"LOG": "readonly",
-		"__wasm__": "readonly"
 	},
 
 	"rules":

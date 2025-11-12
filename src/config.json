@@ -21,7 +21,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           }
         ],
@@ -34,7 +34,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 1
           }
         ],
@@ -48,7 +48,7 @@
 	{
 		"layout":
 		{
-			"width": 1,
+			"width": 3,
 			"height": 1
 		},
 
@@ -64,8 +64,20 @@
 				[
 					{
 						"type": "ORTHOGRAPHIC",
-						"orientation": "axial",
+						"orientation": "AXIAL",
 						"position": 0
+					},
+
+					{
+						"type": "ORTHOGRAPHIC",
+						"orientation": "SAGITTAL",
+						"position": 1
+					},
+
+					{
+						"type": "ORTHOGRAPHIC",
+						"orientation": "CORONAL",
+						"position": 2
 					}
 				],
 
@@ -91,7 +103,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           }
         ],
@@ -104,7 +116,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 1
           }
         ],
@@ -141,7 +153,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           }
         ],
@@ -154,7 +166,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 1
           }
         ],
@@ -168,7 +180,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 2
           }
         ],
@@ -182,7 +194,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 3
           }
         ],
@@ -203,8 +215,7 @@
     "tools":
     [
       "Length",
-      "NormalBrush",
-      "SmartBrush",
+      "Brush",
       "Pan",
       "Zoom",
       "WindowLevel"
@@ -223,19 +234,19 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "sagittal",
+            "orientation": "SAGITTAL",
             "position": 1
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "coronal",
+            "orientation": "CORONAL",
             "position": 2
           },
 
@@ -265,19 +276,19 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "sagittal",
+            "orientation": "SAGITTAL",
             "position": 1
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "coronal",
+            "orientation": "CORONAL",
             "position": 2
           },
 
@@ -340,19 +351,19 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "sagittal",
+            "orientation": "SAGITTAL",
             "position": 1
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "coronal",
+            "orientation": "CORONAL",
             "position": 2
           },
 
@@ -380,19 +391,19 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "sagittal",
+            "orientation": "SAGITTAL",
             "position": 1
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "coronal",
+            "orientation": "CORONAL",
             "position": 2
           },
 
@@ -408,19 +419,19 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 4
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "sagittal",
+            "orientation": "SAGITTAL",
             "position": 5
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "coronal",
+            "orientation": "CORONAL",
             "position": 6
           },
 
@@ -448,7 +459,7 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           },
 
@@ -478,19 +489,19 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 0
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "sagittal",
+            "orientation": "SAGITTAL",
             "position": 1
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "coronal",
+            "orientation": "CORONAL",
             "position": 2
           },
 
@@ -508,13 +519,13 @@
         [
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "axial",
+            "orientation": "AXIAL",
             "position": 4
           },
 
           {
             "type": "ORTHOGRAPHIC",
-            "orientation": "sagittal",
+            "orientation": "SAGITTAL",
             "position": 5
           }
         ],

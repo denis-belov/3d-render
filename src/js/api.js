@@ -4,7 +4,11 @@ import config_api from '../config-api.json';
 
 const PACS_BASE_URL = window.__API_PACS__ || config_api.PACS.URL;
 
-const headers_pacs = new Headers({ 'Authorization': `Basic ${btoa(`${ config_api.PACS.login }:${ config_api.PACS.password }`)}` });
+const headers_pacs =
+	new Headers
+	({
+		'Authorization': `Basic ${btoa(`${ config_api.PACS.login }:${ config_api.PACS.password }`)}`,
+	});
 
 export const getStudyAPI =
 	uuid =>
@@ -33,16 +37,6 @@ export const getFileAPI =
 			`${ PACS_BASE_URL }/instances/${ uuid }/file`,
 
 			{ headers: headers_pacs },
-		)
-			.then(resp => resp.arrayBuffer());
-
-export const getFileAPI2 =
-	(url, headers) =>
-		fetch
-		(
-			url,
-
-			{ headers },
 		)
 			.then(resp => resp.arrayBuffer());
 

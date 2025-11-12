@@ -6,8 +6,6 @@ self.window = self;
 
 
 
-// cv = cv();
-
 const serie_base = new SerieBase();
 
 

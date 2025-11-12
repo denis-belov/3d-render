@@ -1,13 +1,12 @@
-const fs = require('fs');
 const path = require('path');
 const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { CleanWebpackPlugin } = require('clean-webpack-plugin');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
-const OptimizeCSSAssetsPlugin = require('optimize-css-assets-webpack-plugin');
-// const CopyPlugin = require('copy-webpack-plugin');
+const CssMinimizerPlugin = require('css-minimizer-webpack-plugin');
+const CopyPlugin = require('copy-webpack-plugin');
 const CleanTerminalPlugin = require('clean-terminal-webpack-plugin');
-const UglifyJsPlugin = require('uglifyjs-webpack-plugin');
+const TerserPlugin = require('terser-webpack-plugin');
 
 // const vtk_rules = require('@kitware/vtk.js/Utilities/config/dependency.js').webpack.core.rules;
 
@@ -19,15 +18,34 @@ const UglifyJsPlugin = require('uglifyjs-webpack-plugin');
 
 
 
-module.exports = (env) =>
-	({
+module.exports = (env, argv) =>
+{
+	const DEV = env.development || argv.mode === 'development';
+	const PROD = env.production || argv.mode === 'production';
+
+	return {
 		entry: './src/index.js',
 
 		target: 'web',
 
+		// cache: false,
+
 		resolve:
 		{
 			extensions: [ '.js', '.jsx', '.scss' ],
+
+			fallback:
+			{
+				"fs": false,
+				"path": false,
+				"crypto": false,
+				"stream": false,
+				"util": false,
+				"os": false,
+				"buffer": false,
+				"process": false,
+				"assert": false,
+			},
 		},
 
 		output:
@@ -58,22 +76,23 @@ module.exports = (env) =>
 								{
 									loader: 'babel-loader',
 
-									// workaround for correct transpiling glkit when linking from local directory
-									options: JSON.parse(fs.readFileSync('.babelrc')),
-								},
-
-								'@open-wc/webpack-import-meta-loader',
-
-								{
-									loader: 'conditional-compile-loader',
-
-									// options: process.env,
 									options:
 									{
-										WASM: Boolean(process.env.__WASM__),
-										'NON-WASM': !Boolean(process.env.__WASM__),
+										presets:
+										[
+											'@babel/preset-env',
+											'@babel/preset-react'
+										],
+
+										plugins:
+										[
+											'@babel/plugin-proposal-class-properties',
+											'@babel/plugin-proposal-optional-chaining',
+											'@babel/plugin-proposal-class-static-block',
+											'@babel/plugin-syntax-import-meta'
+										]
 									},
-								}
+								},
 							]
 				},
 
@@ -83,8 +102,6 @@ module.exports = (env) =>
 					use:
 					[
 						MiniCssExtractPlugin.loader,
-						// to insert css into html
-						// 'style-loader',
 						'css-loader',
 						'sass-loader',
 					],
@@ -95,104 +112,108 @@ module.exports = (env) =>
 
 					use:
 					[
-						'html-loader',
-						'pug-html-loader',
+						{
+							loader: 'html-loader',
+
+							options:
+							{
+								esModule: false
+							}
+						},
+
+						{
+							loader: 'pug-html-loader',
+
+							options:
+							{
+								pretty: true,
+								exports: false
+							}
+						}
 					],
 				},
 
-				// {
-				// 	test: /\.html$/,
-				// 	use: { loader: 'html-loader', options: { minimize: true } },
-				// },
-
 				{
-					test: /\.(svg|png|jpg|jpeg)$/,
+					test: /\.(png|jpg|jpeg)$/,
 					use: 'base64-inline-loader',
 				},
 
-				// process.env.DIR_RENDERITY ?
+				{
+					test: /\.svg$/,
+					type: 'asset/resource',
 
-				// 	{
-				// 		test: /\.cpp.json$/,
-
-				// 		use:
-				// 		{
-				// 			loader: `${ process.env.DIR_RENDERITY }/cpp-webpack-loader`,
-
-				// 			// options:
-				// 			// 	JSON.parse
-				// 			// 	(fs.readFileSync(`${ process.env.DIR_RENDERITY }/genmake.config.json`)),
-				// 		},
-
-				// 		// Required prop to prevent webpack from importing sources as json.
-				// 		type: 'javascript/auto',
-				// 	} :
-
-				// 	{},
-
-				// {
-				// 	test: /\.wasm$/,
-				// 	use: 'arraybuffer-loader',
-				// 	type: 'javascript/auto',
-				// },
-
-				// {
-				// 	test: /thread.js|thread2.js$/,
-				// 	use: 'raw-loader',
-				// 	// type: 'asset/source',
-				// },
+					generator:
+					{
+						filename: 'images/[name].[hash][ext]',
+					},
+				}
 
 				// ...vtk_rules,
 			],
 		},
 
-		devtool: env === 'development' ? 'source-map' : false,
+		devtool: DEV ? 'eval-source-map' : false,
+
+		optimization:
+		(
+			PROD ?
+
+			{
+				minimize: true,
+				moduleIds: 'named',
+				chunkIds: 'named',
+
+				minimizer:
+				[
+					new TerserPlugin
+					({
+						test: /\.(js|jsx)$/,
+						exclude: /node_modules/,
+
+						terserOptions:
+						{
+							compress: {},
+							mangle: true,
+						},
+					}),
+
+					new CssMinimizerPlugin(),
+				],
+			} :
+
+			{}
+		),
 
 		plugins:
 		[
-			...(
-				env === 'production' ?
-
-					[
-						new UglifyJsPlugin
-						({
-							test: /\.(js|jsx)$/,
-							exclude: /node_modules/,
-
-							uglifyOptions:
-							{
-								compress: {},
-								mangle: true,
-							},
-						})
-					] :
-
-					[]
-			),
-
 			new CleanWebpackPlugin(),
 
 			new MiniCssExtractPlugin({ filename: 'index.css' }),
 
-			new OptimizeCSSAssetsPlugin({}),
-
 			new HtmlWebpackPlugin
 			({
-				filename: path.join(__dirname, 'build/index.html'),
+				filename: 'index.html',
 				template: path.join(__dirname, 'src/index.pug'),
 				inject: 'body',
-
 				minify:
-				{
-					removeAttributeQuotes: true,
-				},
+				(
+					PROD ?
+
+						{
+							removeAttributeQuotes: true,
+							removeComments: true,
+							collapseWhitespace: true,
+						} :
+
+						false
+				),
 			}),
 
 			// new CopyPlugin
 			// ({
 			// 	patterns:
 			// 	[
-			// 		// { from: 'src/test', to: 'test' },
+			// 		{ from: '/', to: '/' },
 			// 	],
 			// }),
 
@@ -201,10 +222,6 @@ module.exports = (env) =>
 			new webpack.DefinePlugin
 			({
 				LOG: 'console.log',
-				log: 'console.log',
-
-				LOGC: 'console.clear() || console.log',
-				logc: 'console.clear() || console.log',
 
 				'process.env': JSON.stringify(process.env),
 			}),
@@ -215,7 +232,6 @@ module.exports = (env) =>
 			compress: true,
 			historyApiFallback: true,
 			host: 'localhost',
-			port: 8080,
 			port: 3000,
 
 			headers:
@@ -224,4 +240,5 @@ module.exports = (env) =>
 				'Cross-Origin-Embedder-Policy': 'require-corp',
 			},
 		},
-	});
+	};
+};

@@ -1,8 +1,3 @@
-// Presuming that shared array buffer is available in current browser.
-// TODO: make solution for non-SAB browsers?
-
-
-
 import * as dat from 'dat.gui';
 
 import JSZip from 'jszip';
@@ -13,6 +8,25 @@ import { OrbitControls as THREE_OrbitControls } from 'three/examples/jsm/control
 import { STLExporter as THREE_STLExporter } from 'three/examples/jsm/exporters/STLExporter';
 import * as nifti from 'nifti-js';
 import * as niftiReader from 'nifti-reader-js';
+
+// Volume rendering
+import '@kitware/vtk.js/Rendering/Profiles/Volume';
+
+import * as cornerstone from '@cornerstonejs/core';
+import * as cornerstoneTools from '@cornerstonejs/tools';
+
+import SerieBase from './serie-base';
+
+// import MarchingCubesWorker from '../workers/marching-cubes.worker';
+import CommonWorker from '../workers/common.worker';
+
+import { addMarkupAPI, getMarkupAPI } from './api';
+
+import { getViewportUIVolume, getViewportUIVolume3D } from './viewport-ui';
+
+import { cache } from '@cornerstonejs/core';
+
+import { createSegmentationGUI, addSegmentationGUI, activateSegmentationGUI } from './createSegmentationGUI';
 
 // NIfTI-1 writer implementation with proper header format
 const NIfTIWriter = {
@@ -220,68 +234,11 @@ const NIfTIWriter = {
 	}
 };
 
-// Volume rendering
-import '@kitware/vtk.js/Rendering/Profiles/Volume';
-// import vtkRenderer from '@kitware/vtk.js/Rendering//Core/Renderer';
-// import vtkRenderWindow from '@kitware/vtk.js/Rendering/Core/RenderWindow';
-// import vtkInteractorStyleTrackballCamera from '@kitware/vtk.js/Interaction/Style/InteractorStyleTrackballCamera';
-// import vtkRenderWindowInteractor from '@kitware/vtk.js/Rendering/Core/RenderWindowInteractor';
-// import vtkOpenGLRenderWindow from '@kitware/vtk.js/Rendering/OpenGL/RenderWindow';
-// import vtkVolume from '@kitware/vtk.js/Rendering/Core/Volume';
-// import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
-// import vtkColorTransferFunction  from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
-// import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
-import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
-import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
-import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
-import vtkColorMaps from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/ColorMaps';
-
-import * as cornerstone from '@cornerstonejs/core';
-import * as cornerstoneTools from '@cornerstonejs/tools';
-
-import { createAndCacheDerivedVolume } from '../extensions/cornerstonejs/createAndCacheDerivedVolume';
-// import { mouseWheelCallback } from '../extensions/cornerstonejs/mouseWheelCallback';
-
-import SerieBase from './serie-base';
-
-// import SegmentationWorker from '../workers/segmentation.worker';
-import BlurWorker from '../workers/blur.worker';
-// import MarchingCubesWorker from '../workers/marching-cubes.worker';
-import CommonWorker from '../workers/common.worker';
-import BrushWorker from '../workers/brush.worker';
-
-import { addMarkupAPI, getMarkupAPI } from './api';
-
-import { getViewportUIVolume, getViewportUIVolume3D } from './viewport-ui';
-
-import { mouseWheelCallback } from '../extensions/cornerstonejs/mouseWheelCallback';
-
-import color_LUT from './color-LUT';
-
-
-
-import { getEnabledElementByIds } from '@cornerstonejs/core';
-import Representations from '@cornerstonejs/tools/dist/esm/enums/SegmentationRepresentations';
-import { surfaceDisplay } from '@cornerstonejs/tools/dist/esm/tools/displayTools/Surface/index';
-import { contourDisplay } from '@cornerstonejs/tools/dist/esm/tools/displayTools/Contour/index';
-import { labelmapDisplay } from '@cornerstonejs/tools/dist/esm/tools/displayTools/Labelmap/index';
-
-import { cache } from '@cornerstonejs/core';
-
 
 
 let MAX_SEGMENTATION_COUNT = Infinity;
 const __SEGMENTATION_TYPE_STACK__ = 0;
 const __SEGMENTATION_TYPE_VOLUME__ = 1;
-
-
-
-color_LUT.forEach(color => (color[3] = 50));
-
-
-
-const getSharedFloat32Array = size => new Float32Array(new SharedArrayBuffer(size * 4));
-const getSharedUint32Array = size => new Uint32Array(new SharedArrayBuffer(size * 4));
 
 
 
@@ -300,9 +257,58 @@ document.body.appendChild(link);
 const download =
 	(blob, filename) =>
 	{
-		link.href = URL.createObjectURL(blob);
-		link.download = filename;
-		link.click();
+		const url = URL.createObjectURL(blob);
+		const downloadLink = document.createElement('a');
+		downloadLink.href = url;
+		downloadLink.download = filename;
+		downloadLink.style.display = 'none';
+
+		// Check if we're in an iframe
+		const isInIframe = window.self !== window.top;
+
+		if (isInIframe) {
+			// In iframe: try to trigger download in parent window if same-origin
+			// Otherwise, open blob URL in new tab (Chrome blocks download attribute in iframes)
+			try {
+				// Try parent window download (only works if same-origin)
+				if (window.parent && window.parent !== window) {
+					const parentLink = window.parent.document.createElement('a');
+					parentLink.href = url;
+					parentLink.download = filename;
+					parentLink.style.display = 'none';
+					window.parent.document.body.appendChild(parentLink);
+					parentLink.click();
+					setTimeout(() => {
+						if (parentLink.parentNode) {
+							window.parent.document.body.removeChild(parentLink);
+						}
+						URL.revokeObjectURL(url);
+					}, 100);
+					return;
+				}
+			} catch (e) {
+				// Cross-origin error - fall through to new tab approach
+				console.log('Cannot access parent window (cross-origin), opening in new tab');
+			}
+
+			// Fallback: open blob URL in new tab (user can save manually)
+			downloadLink.target = '_blank';
+			downloadLink.rel = 'noopener noreferrer';
+			document.body.appendChild(downloadLink);
+			downloadLink.click();
+		} else {
+			// Normal window: standard download
+			document.body.appendChild(downloadLink);
+			downloadLink.click();
+		}
+
+		// Clean up
+		setTimeout(() => {
+			if (downloadLink.parentNode) {
+				document.body.removeChild(downloadLink);
+			}
+			URL.revokeObjectURL(url);
+		}, 100);
 	};
 
 const downloadString =
@@ -431,23 +437,11 @@ export default class Serie extends SerieBase
 {
 	async init (imageIds, volume_id, viewport_inputs, segmentationIsEnabled, study_index, parent)
 	{
+		LOG(imageIds)
 		this.study_index = study_index;
 		this.imageIds = imageIds;
-		// LOG('imageIds', imageIds)
-		// window.__dl = async () =>
-		// {
-		// 	const zip = new JSZip();
-
-		// 	imageIds.files.forEach(file => zip.file(file.name, file.arrayBuffer()));
-
-		// 	const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
-
-		// 	downloadZip(data_zip, `${ imageIds.series_id }.zip`);
-		// };
 
 		this.viewport_inputs = viewport_inputs;
-
-		// imageIds = imageIds.sort((a, b) => (a.match(/[0-9]+/g)[0] - b.match(/[0-9]+/g)[0]));
 
 		let data_range = null;
 
@@ -485,7 +479,10 @@ export default class Serie extends SerieBase
 
 			await new Promise(resolve => volume.load(resolve));
 
-			data_range = volume.imageData.getPointData().getScalars().getRange();
+			this.volume.scalarData = this.volume.voxelManager.getCompleteScalarDataArray();
+
+			// data_range = volume.imageData.getPointData().getScalars().getRange();
+			data_range = volume.voxelManager.getRange();
 
 			this.data_range = data_range;
 
@@ -548,20 +545,16 @@ export default class Serie extends SerieBase
 
 		if (segmentationIsEnabled)
 		{
-			LOG('segmentationIsEnabled', segmentationIsEnabled)
 			if (this.study_index === 0)
 			{
-				LOG('this.study_index', this.study_index)
 				this.dat_gui = new dat.GUI();
 
 				this.dat_gui.domElement.parentNode.removeChild(this.dat_gui.domElement);
 
 				document.getElementsByClassName('sidebar')[0].appendChild(this.dat_gui.domElement);
-
-				LOG('this.dat_gui.domElement', this.dat_gui.domElement)
 			}
 
-			this.createGui2();
+			createSegmentationGUI(this);
 
 			this.segmentations = [];
 
@@ -569,77 +562,36 @@ export default class Serie extends SerieBase
 
 			if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
 			{
-				// TODO: replace window.__TEST__ with argument "initial_segmentation".
-				this.volume_segm = await this.createVolumeSegmentation(`${ volume_id }_SEGM`, window.__TEST__);
+				this.volume_segm = await this.createVolumeSegmentation(`${ volume_id }_SEGM`);
 
-				// TODO: rename.
-				// this.volume_segmented_data[i] == this.volume_segm.scalarData[i] ? volume.scalarData[i] : 0;
-				// this.volume_segmented_data = getSharedFloat32Array(this.volume.scalarData.length);
-
-				// window.volume_segmented_data = this.volume_segmented_data;
-				// window.volume_scalarData = this.volume.scalarData;
-
-				// this.volume_segmented_data.set(this.volume_segm.scalarData.m);
-
-				// for (let i = 0, i_max = this.volume.scalarData.length; i < i_max; ++i)
-				// {
-				// 	if (this.volume_segm.scalarData[i])
-				// 	{
-				// 		this.volume_segmented_data[i] = this.volume.scalarData[i];
-				// 	}
-				// }
+				this.volume_segm.scalarData = this.volume_segm.voxelManager.getCompleteScalarDataArray();
 
 				this.recomputeBoundingBox();
-
-				// TODO: rename.
-				// Binary representation of segmentation.
-
-				// #ifdef WASM
-				{
-					this.scalar_data2 = new self.wasm.Uint32Array(this.volume.scalarData.length);
-				}
-				// #endif
-
-				// #ifdef NON-WASM
-				{
-					this.scalar_data2 = new Uint32Array(this.volume.scalarData.length);
-				}
-				// #endif
-
-				window.saveContour5 = (...args) => this.saveContour5(...args);
 
 				// // TODO: call these functions when all webgl textures have been created
 				// // and remove try block from "activateSegmentation".
 				// this.addSegmentation();
 				// this.activateSegmentation(0);
 
-				// #ifdef WASM
-				// this.blurred1 = getSharedFloat32Array(this.volume.scalarData.length);
-				// this.blurred2 = getSharedFloat32Array(this.volume.scalarData.length);
-				// this.blurred = new Float32Array(this.volume.scalarData.length);
-				// this.blurred = getSharedFloat32Array(this.volume.scalarData.length);
-				this.blurred = [ getSharedFloat32Array(this.volume.scalarData.length), getSharedFloat32Array(this.volume.scalarData.length) ];
-				// #endif
-
-
-
-				{
-					// this.marching_cubes_worker = new CommonWorker();
-
-					this.workers = await this.initCommonWorkers(32);
-				}
-
-				// // #ifdef WASM
-				// {
-				// 	this.brush_worker = new BrushWorker();
-
-				// 	await this.initCommonWorkers([ this.brush_worker ], { wasm: { code: self.wasm.code, memory: self.wasm.memory, stack_pointer: self.wasm.options.thread_stack_size } });
-				// }
-				// // #endif
+				this.workers = await this.initCommonWorkers(32);
 			}
 			else
 			{
-				const { imageIds: segmentationImageIds } = await cornerstone.imageLoader.createAndCacheDerivedSegmentationImages(imageIds);
+				// For stack viewports in v4, create segmentation image IDs manually
+				const segmentationImageIds = imageIds.map((imageId, index) => {
+					// Parse the image ID to extract scheme and URL
+					const firstColonIndex = imageId.indexOf(':');
+					const scheme = imageId.substring(0, firstColonIndex);
+					let url = imageId.substring(firstColonIndex + 1);
+
+					// Remove frame parameter if present
+					const frameIndex = url.indexOf('frame=');
+					if (frameIndex !== -1) {
+						url = url.substring(0, frameIndex - 1);
+					}
+
+					return `segmentation:${scheme}:${url}#${index}`;
+				});
 
 				const imageIdReferenceMap = new Map();
 
@@ -661,7 +613,7 @@ export default class Serie extends SerieBase
 					},
 				]);
 
-				this.segmentation_representation_ids = await cornerstoneTools.segmentation.addSegmentationRepresentations
+				await cornerstoneTools.segmentation.addSegmentationRepresentations
 				(
 					this.toolGroup.id,
 
@@ -670,9 +622,9 @@ export default class Serie extends SerieBase
 							segmentationId: this.volume_segm.volumeId,
 							type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
 
-							options:
+							config:
 							{
-								colorLUTOrIndex: color_LUT,
+								colorLUTOrIndex: 0,
 							},
 						},
 					],
@@ -683,10 +635,6 @@ export default class Serie extends SerieBase
 
 			{
 				this.smoothing = 20;
-				this.threshold = 0;
-				this.tmin = data_range[0];
-				this.tmax = data_range[1];
-				this.blur = 1;
 
 				this.setBrushSize(5);
 
@@ -699,29 +647,6 @@ export default class Serie extends SerieBase
 						actions:
 						{
 							'download segmentation': () => this.downloadSegmentation(),
-
-							'export volume to NIfTI': async () => {
-								try {
-									await this.convertVolumeToNifti({
-										filename: `volume_${this.series_id}`,
-										includeSegmentation: false
-									});
-								} catch (error) {
-									console.error('Failed to export volume to NIfTI:', error);
-									alert('Failed to export volume to NIfTI: ' + error.message);
-								}
-							},
-
-							'export segmentation to NIfTI': async () => {
-								try {
-									await this.convertSegmentationToNifti(`segmentation_${this.series_id}`);
-								} catch (error) {
-									console.error('Failed to export segmentation to NIfTI:', error);
-									alert('Failed to export segmentation to NIfTI: ' + error.message);
-								}
-							},
-
-							'read NIfTI file': () => this.readNII(),
 
 							'upload segmentation 2': async () =>
 							{
@@ -750,18 +675,11 @@ export default class Serie extends SerieBase
 
 								this.clearSegmentation();
 
-								// this.volume_segm.scalarData.set(new Float32Array(_data));
-
 								const _data_float32 = new Float32Array(_data);
 
-								// for (let i = 0; i < this.volume_segm.scalarData.length; ++i)
 								for (let i = 0; i < this.volume.scalarData.length; ++i)
 								{
 									this.volume_segm.scalarData[i] = _data_float32[i] ? (this.current_segm + 2) : 0;
-
-									// this.volume_segmented_data[i] = this.volume_segm.scalarData[i] ? this.volume.scalarData[i] : 0;
-
-									this.scalar_data2[i] = this.volume_segm.scalarData[i] ? 1 : 0;
 								}
 
 								if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
@@ -769,7 +687,6 @@ export default class Serie extends SerieBase
 									this.recomputeBoundingBox();
 								}
 
-								// this.renderSegmentation();
 								cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
 							},
 
@@ -894,7 +811,7 @@ export default class Serie extends SerieBase
 									}
 
 									series.clearSegmentation();
-									series.createGui2();
+									createSegmentationGUI(series);
 
 									series.segmentations.length = 0;
 
@@ -920,10 +837,6 @@ export default class Serie extends SerieBase
 											for (let i = 0; i < data_orig.length; ++i)
 											{
 												series.volume_segm.scalarData[i] = data_orig[i] ? (series.current_segm + 2) : 0;
-
-												// series.volume_segmented_data[i] = series.volume_segm.scalarData[i] ? series.volume.scalarData[i] : 0;
-
-												series.scalar_data2[i] = series.volume_segm.scalarData[i] ? 1 : 0;
 											}
 										}
 										else
@@ -995,10 +908,6 @@ export default class Serie extends SerieBase
 						{
 							'filtering': 0,
 							// 'smoothing': 0,
-							[`threshold (${ data_range[1] - data_range[0] })`]: this.threshold,
-							'tmin': this.tmin,
-							'tmax': this.tmax,
-							'blur': this.blur,
 							'brush size': this.toolGroup._toolInstances.Brush.configuration.brushSize,
 							'single slice': false,
 							'sync': false,
@@ -1057,7 +966,7 @@ export default class Serie extends SerieBase
 									class_name = `${ segm.name };${ width },${ height };${ this.series_id }`;
 								}
 
-								const layout_json = cornerstoneTools.segmentation.config.color.getColorForSegmentIndex(this.toolGroup.id, this.segmentation_representation_ids[0], i + 2);
+								const layout_json = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, this.volume_segm.volumeId, i + 2);
 
 								await addMarkupAPI(parseInt(window.__MARKUP_DST__, 10), class_name, arrayBufferToBase64(new Uint8Array(layout_json).buffer), arrayBufferToBase64(data_zip));
 							}
@@ -1075,7 +984,7 @@ export default class Serie extends SerieBase
 							}
 
 							this.clearSegmentation();
-							this.createGui2();
+							createSegmentationGUI(this);
 
 							this.segmentations.length = 0;
 
@@ -1083,7 +992,7 @@ export default class Serie extends SerieBase
 							{
 								if (layout_json?.length)
 								{
-									cornerstoneTools.segmentation.config.color.setColorForSegmentIndex(this.toolGroup.id, this.segmentation_representation_ids[0], i + 2, new Uint8Array(Uint8Array.from(atob(layout_json[i]), c => c.charCodeAt(0))));
+									cornerstoneTools.segmentation.config.color.setSegmentIndexColor(viewport.id, this.volume_segm.volumeId, i + 2, new Uint8Array(Uint8Array.from(atob(layout_json[i]), c => c.charCodeAt(0))));
 								}
 
 
@@ -1115,10 +1024,6 @@ export default class Serie extends SerieBase
 									for (let i = 0; i < data_orig.length; ++i)
 									{
 										this.volume_segm.scalarData[i] = data_orig[i] ? (this.current_segm + 2) : 0;
-
-										// this.volume_segmented_data[i] = this.volume_segm.scalarData[i] ? this.volume.scalarData[i] : 0;
-
-										this.scalar_data2[i] = this.volume_segm.scalarData[i] ? 1 : 0;
 									}
 								}
 								else
@@ -1153,128 +1058,32 @@ export default class Serie extends SerieBase
 
 				if (this.study_index === 0)
 				{
-					this.enabled_edit_tool = cornerstoneTools.NormalBrushTool.toolName;
-					this.enabled_view_tool = null;
-
-					const setButtonStyle = (tool_name_gui) =>
 					{
-						const [ { domElement } ] =
-							gui_folders.tools.__controllers
-								.filter(contr => (contr.property === tool_name_gui));
+						const tool_names =
+						[
+							cornerstoneTools.BrushTool.toolName,
+							cornerstoneTools.PaintFillTool.toolName,
+							cornerstoneTools.CircleScissorsTool.toolName,
+							// cornerstoneTools.RegionSegmentTool.toolName,
+							// cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName,
+							cornerstoneTools.LengthTool.toolName,
+							cornerstoneTools.PanTool.toolName,
+							cornerstoneTools.ZoomTool.toolName,
+							cornerstoneTools.WindowLevelTool.toolName,
+						];
 
-						domElement
-							.closest('ul')
-							.querySelectorAll('.cr.function')
-							.forEach(sel => (sel.style.filter = 'grayscale(0)'));
-
-						domElement.closest('li').style.filter = 'grayscale(1)';
-					};
-
-					const setEditTool = (tool_name) =>
-					{
-						setButtonStyle(tool_name);
-
-						window.__series.forEach(_this => _this.toolGroup.setToolDisabled(this.enabled_edit_tool));
-
-						document.body
-							.querySelectorAll('.viewport_grid-canvas_panel-item')
-							.forEach(sel => (sel.style.cursor = 'default'));
-
-						window.__series.forEach(_this => _this.toolGroup.setToolActive((this.enabled_edit_tool = tool_name), { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] }));
-
-						window.__series.forEach(_this => _this.toolGroup.setToolPassive(this.enabled_view_tool));
-
-						this.enabled_view_tool = null;
-					};
-
-					const setViewTool = (tool_name) =>
-					{
-						setButtonStyle(tool_name);
-
-						window.__series.forEach(_this => _this.toolGroup.setToolPassive(this.enabled_edit_tool));
-
-						window.__series.forEach(_this => _this.toolGroup.setToolPassive(this.enabled_view_tool));
-						window.__series.forEach(_this => _this.toolGroup.setToolActive((this.enabled_view_tool = tool_name), { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] }));
-					};
-
-					if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-					{
-						gui_options.tools =
-						{
-							[ cornerstoneTools.LengthTool.toolName ]: () => setEditTool(cornerstoneTools.LengthTool.toolName),
-							[ cornerstoneTools.NormalBrushTool.toolName ]: () => setEditTool(cornerstoneTools.NormalBrushTool.toolName),
-							[ cornerstoneTools.SmartBrushTool.toolName ]: () => setEditTool(cornerstoneTools.SmartBrushTool.toolName),
-							[ cornerstoneTools.PanTool.toolName ]: () => setViewTool(cornerstoneTools.PanTool.toolName),
-							[ cornerstoneTools.ZoomTool.toolName ]: () => setViewTool(cornerstoneTools.ZoomTool.toolName),
-							[ cornerstoneTools.WindowLevelTool.toolName ]: () => setViewTool(cornerstoneTools.WindowLevelTool.toolName),
-						};
-					}
-					else
-					{
-						gui_options.tools =
-						{
-							[ cornerstoneTools.LengthTool.toolName ]: () => setEditTool(cornerstoneTools.LengthTool.toolName),
-							[ cornerstoneTools.BrushTool.toolName ]: () => setEditTool(cornerstoneTools.BrushTool.toolName),
-							[ cornerstoneTools.PanTool.toolName ]: () => setViewTool(cornerstoneTools.PanTool.toolName),
-							[ cornerstoneTools.ZoomTool.toolName ]: () => setViewTool(cornerstoneTools.ZoomTool.toolName),
-							[ cornerstoneTools.WindowLevelTool.toolName ]: () => setViewTool(cornerstoneTools.WindowLevelTool.toolName),
-						};
-					}
-
-					{
-						let tools =
-						{
-
-						};
-						if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-						{
-							gui_options.tools =
-							{
-								[ cornerstoneTools.LengthTool.toolName ]: () => setEditTool(cornerstoneTools.LengthTool.toolName),
-								[ cornerstoneTools.NormalBrushTool.toolName ]: () => setEditTool(cornerstoneTools.NormalBrushTool.toolName),
-								[ cornerstoneTools.SmartBrushTool.toolName ]: () => setEditTool(cornerstoneTools.SmartBrushTool.toolName),
-								[ cornerstoneTools.PanTool.toolName ]: () => setViewTool(cornerstoneTools.PanTool.toolName),
-								[ cornerstoneTools.ZoomTool.toolName ]: () => setViewTool(cornerstoneTools.ZoomTool.toolName),
-								[ cornerstoneTools.WindowLevelTool.toolName ]: () => setViewTool(cornerstoneTools.WindowLevelTool.toolName),
-							};
-						}
-						else
-						{
-							gui_options.tools =
-							{
-								[ cornerstoneTools.LengthTool.toolName ]: () => setEditTool(cornerstoneTools.LengthTool.toolName),
-								[ cornerstoneTools.BrushTool.toolName ]: () => setEditTool(cornerstoneTools.BrushTool.toolName),
-								[ cornerstoneTools.PanTool.toolName ]: () => setViewTool(cornerstoneTools.PanTool.toolName),
-								[ cornerstoneTools.ZoomTool.toolName ]: () => setViewTool(cornerstoneTools.ZoomTool.toolName),
-								[ cornerstoneTools.WindowLevelTool.toolName ]: () => setViewTool(cornerstoneTools.WindowLevelTool.toolName),
-							};
-						}
-
-						let tool_names = null;
-
-						if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-						{
-							tool_names =
-							[
-								cornerstoneTools.LengthTool.toolName,
-								cornerstoneTools.NormalBrushTool.toolName,
-								cornerstoneTools.SmartBrushTool.toolName,
-								cornerstoneTools.PanTool.toolName,
-								cornerstoneTools.ZoomTool.toolName,
-								cornerstoneTools.WindowLevelTool.toolName,
-							];
-						}
-						else
-						{
-							tool_names =
-							[
-								cornerstoneTools.LengthTool.toolName,
-								cornerstoneTools.BrushTool.toolName,
-								cornerstoneTools.PanTool.toolName,
-								cornerstoneTools.ZoomTool.toolName,
-								cornerstoneTools.WindowLevelTool.toolName,
-							];
-						}
+						const tool_names2 =
+						[
+							'Brush',
+							'Paint Fill',
+							'Circle Scissors',
+							'Region Segment',
+							'Planar Freehand Contour Segmentation',
+							'Length',
+							'Pan',
+							'Zoom',
+							'Window/Level',
+						];
 
 						const createRange = options =>
 						{
@@ -1361,26 +1170,26 @@ export default class Serie extends SerieBase
 
 						tool_names.forEach
 						(
-							tool_name =>
+							(tool_name, tool_name_index) =>
 							{
 								const button = document.createElement('div');
 
 								button.className = 'topbar-button';
-								button.innerHTML = `<span>${ tool_name }</span><div class="topbar-button-settings"></div>`;
+								button.innerHTML = `<span>${ tool_names2[tool_name_index] }</span><div class="topbar-button-settings"></div>`;
 
-								if (tool_name !== 'Brush' && tool_name !== 'NormalBrush' && tool_name !== 'SmartBrush')
+								if (tool_name !== 'Brush')
 								{
-									button.innerHTML = `<span>${ tool_name }</span>`;
+									button.innerHTML = `<span>${ tool_names2[tool_name_index] }</span>`;
 								}
 
-								if (tool_name === 'Brush' || tool_name === 'NormalBrush')
+								if (tool_name === 'Brush')
 								{
 									button.className = 'topbar-button -active';
 								}
 
 								document.getElementsByClassName('topbar')[0].appendChild(button);
 
-								if (tool_name === 'Brush' || tool_name === 'NormalBrush')
+								if (tool_name === 'Brush')
 								{
 									const settings = document.createElement('div');
 									settings.className = 'topbar-button-settings_menu';
@@ -1415,7 +1224,7 @@ export default class Serie extends SerieBase
 									createCheckbox
 									({
 										container: settings,
-										name: '✓ Single slice',
+										name: 'Single slice',
 										callback: value =>
 										{
 											window.__series
@@ -1425,119 +1234,19 @@ export default class Serie extends SerieBase
 													{
 														_this.single_slice = value;
 
-														if (_this.toolGroup._toolInstances.Brush.configuration.erase)
+														if (_this.single_slice)
 														{
-															if (_this.single_slice)
-															{
-																_this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-																_this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-																// _this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-															}
-															else
-															{
-																_this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-																_this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-																// _this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-															}
+															this.toolGroup._toolInstances.Brush.configuration.activeStrategy = this.toolGroup._toolInstances.Brush.configuration.activeStrategy.replace('CIRCLE', 'SPHERE');
 														}
 														else
 														{
-															if (_this.single_slice)
-															{
-																_this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-																_this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-																// _this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-															}
-															else
-															{
-																_this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-																_this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-																// _this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-															}
+															this.toolGroup._toolInstances.Brush.configuration.activeStrategy = this.toolGroup._toolInstances.Brush.configuration.activeStrategy.replace('SPHERE', 'CIRCLE');
 														}
 
 														cornerstoneTools.utilities.triggerAnnotationRenderForViewportIds(_this.renderingEngine, _this.viewport_inputs.map(_ => _.viewportId));
 													},
 												);
 										},
-									});
-
-									button.appendChild(settings);
-								}
-								else if (tool_name === 'SmartBrush')
-								{
-									const settings = document.createElement('div');
-									settings.className = 'topbar-button-settings_menu';
-
-									button.getElementsByClassName('topbar-button-settings')[0].addEventListener
-									(
-										'click',
-
-										evt =>
-										{
-											evt.stopPropagation();
-
-											Array.from(document.getElementsByClassName('topbar-button-settings_menu'))
-												.filter(el => el !== button.getElementsByClassName('topbar-button-settings_menu')[0])
-												.forEach(el => el.style.display = 'none');
-
-											settings.style.display = settings.style.display === 'block' ? 'none' : 'block';
-										},
-									);
-
-									createRange
-									({
-										container: settings,
-										min: 0,
-										max: 100,
-										step: 1,
-										value: 5,
-										name: 'Size',
-										callback: evt => this.setBrushSize(parseInt(evt.target.value)),
-									});
-
-									createRange
-									({
-										container: settings,
-										min: 0,
-										max: this.data_range[1] - this.data_range[0],
-										step: 1,
-										value: 0,
-										name: 'Threshold',
-										callback: evt => (this.threshold = parseInt(evt.target.value)),
-									});
-
-									createRange
-									({
-										container: settings,
-										min: 0,
-										max: this.data_range[1] - this.data_range[0],
-										step: 1,
-										value: 0,
-										name: 'Min',
-										callback: evt => (this.tmin = parseInt(evt.target.value)),
-									});
-
-									createRange
-									({
-										container: settings,
-										min: 0,
-										max: this.data_range[1] - this.data_range[0],
-										step: 1,
-										value: this.data_range[1] - this.data_range[0],
-										name: 'Max',
-										callback: evt => (this.tmax = parseInt(evt.target.value)),
-									});
-
-									createRange
-									({
-										container: settings,
-										min: 0,
-										max: 100,
-										step: 1,
-										value: 0,
-										name: 'Blur',
-										callback: evt => (this.blur = parseInt(evt.target.value)),
 									});
 
 									button.appendChild(settings);
@@ -1568,8 +1277,6 @@ export default class Serie extends SerieBase
 
 						// document.getElementsByClassName('topbar')[0].style.width = `${ tool_names.lenght * 60 }px`;
 					}
-
-					// this.toolGroup._toolInstances.StackScrollMouseWheel.constructor.prototype.mouseWheelCallback = mouseWheelCallback;
 
 					this.gui_options = gui_options;
 
@@ -1715,118 +1422,6 @@ export default class Serie extends SerieBase
 					// 		},
 					// 	);
 
-					gui_folders.options
-						// .add(gui_options.options, 'threshold', 0, 1, 0.01)
-						// .add(gui_options.options, 'threshold', 0.001, 0.1, 0.001)
-						.add(gui_options.options, `threshold (${ data_range[1] - data_range[0] })`, 0, (this.data_range[1] - this.data_range[0]), 1)
-							.onChange
-							(
-								(value) =>
-								{
-									this.threshold = value;
-								},
-							);
-
-					gui_folders.options
-						.add(gui_options.options, 'tmin', this.data_range[0], this.data_range[1], 1)
-							.onChange
-							(
-								(value) =>
-								{
-									this.tmin = value;
-								},
-							);
-
-					gui_folders.options
-						.add(gui_options.options, 'tmax', this.data_range[0], this.data_range[1], 1)
-							.onChange
-							(
-								(value) =>
-								{
-									this.tmax = value;
-								},
-							);
-
-					gui_folders.options
-						.add(gui_options.options, 'blur', 1, 32, 1)
-							.onChange
-							(
-								(value) =>
-								{
-									this.blur = value;
-
-									// this.setBlurred();
-								},
-							);
-
-					window.blur =
-						value =>
-						{
-							this.blur = value;
-
-							// this.setBlurred();
-						};
-
-					gui_folders.options
-						.add(gui_options.options, 'brush size', 0, 100, 1)
-							.onChange
-							(
-								value => this.setBrushSize(value),
-							);
-
-					if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-					{
-						gui_folders.options
-							.add(gui_options.options, 'single slice')
-								.onChange
-								(
-									(value) =>
-									{
-										window.__series
-											.forEach
-											(
-												_this =>
-												{
-													_this.single_slice = value;
-
-													if (_this.toolGroup._toolInstances.Brush.configuration.erase)
-													{
-														if (_this.single_slice)
-														{
-															_this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-															_this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-															_this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-														}
-														else
-														{
-															_this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-															_this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-															_this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-														}
-													}
-													else
-													{
-														if (_this.single_slice)
-														{
-															_this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-															_this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-															_this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-														}
-														else
-														{
-															_this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-															_this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-															_this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-														}
-													}
-
-													cornerstoneTools.utilities.triggerAnnotationRenderForViewportIds(_this.renderingEngine, _this.viewport_inputs.map(_ => _.viewportId));
-												},
-											);
-									},
-								);
-					}
-
 					if (window.__SYNC_MODE__)
 					{
 						gui_folders.options
@@ -1883,7 +1478,7 @@ export default class Serie extends SerieBase
 
 															if (imageIndex < dst_viewport.getNumberOfSlices() && imageIndex >= 0)
 															{
-																cornerstoneTools.utilities.jumpToSlice(dst_viewport.element, { imageIndex });
+																cornerstone.utilities.jumpToSlice(dst_viewport.element, { imageIndex });
 
 																document.getElementById(`label-${ dst_viewport.id }`).innerHTML = `${ imageIndex + 1 }/${ parseInt(document.getElementById(`slider-${ dst_viewport.id }`).max, 10) + 1 }`;
 																document.getElementById(`slider-${ dst_viewport.id }`).value = imageIndex;
@@ -1943,7 +1538,7 @@ export default class Serie extends SerieBase
 													this.cameraSyncCallback = [];
 
 													Array.from(dst_viewport.element.querySelector('[type=range]').parentNode.children).forEach(el => el.style.display = 'initial');
-													cornerstoneTools.utilities.jumpToSlice(dst_viewport.element, { imageIndex: parseInt(dst_viewport.element.querySelector('[type=range]').value, 10) });
+													cornerstone.utilities.jumpToSlice(dst_viewport.element, { imageIndex: parseInt(dst_viewport.element.querySelector('[type=range]').value, 10) });
 
 													src_viewport.dst_viewport.splice(src_viewport.dst_viewport.indexOf(dst_viewport, 1));
 												}
@@ -1963,60 +1558,7 @@ export default class Serie extends SerieBase
 							.add(gui_options.actions, 'copy segmentation');
 					}
 
-					if (window.__CONFIG__.features?.includes('web'))
-					{
-						if (parseInt(window.__MARKUP_DST__, 10) !== -1)
-						{
-							gui_folders.actions.add(gui_options.actions, 'save segmentation');
-						}
-
-						if (window.__MARKUP_SRC__ !== undefined)
-						{
-							gui_folders.actions.add(gui_options.actions, 'restore segmentation');
-						}
-
-						// Add NIfTI export options for web mode
-						gui_folders.actions.add(gui_options.actions, 'export volume to NIfTI');
-						if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__) {
-							gui_folders.actions.add(gui_options.actions, 'export segmentation to NIfTI');
-						}
-						gui_folders.actions.add(gui_options.actions, 'read NIfTI file');
-					}
-					else
-					{
-						gui_folders.actions.add(gui_options.actions, 'download segmentation');
-						gui_folders.actions.add(gui_options.actions, 'upload segmentation');
-						gui_folders.actions.add(gui_options.actions, 'upload segmentation 2');
-						gui_folders.actions.add(gui_options.actions, 'copy segmentation');
-
-						// Add NIfTI export options for non-web mode
-						gui_folders.actions.add(gui_options.actions, 'export volume to NIfTI');
-						if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__) {
-							gui_folders.actions.add(gui_options.actions, 'export segmentation to NIfTI');
-						}
-						gui_folders.actions.add(gui_options.actions, 'read NIfTI file');
-					}
-
 					gui_folders.actions.open();
-
-					gui_folders.tools = this.dat_gui.addFolder('Tools');
-
-					gui_folders.tools.add(gui_options.tools, cornerstoneTools.LengthTool.toolName);
-					gui_folders.tools.add(gui_options.tools, cornerstoneTools.PanTool.toolName);
-					gui_folders.tools.add(gui_options.tools, cornerstoneTools.ZoomTool.toolName);
-
-					if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-					{
-						gui_folders.tools.add(gui_options.tools, cornerstoneTools.NormalBrushTool.toolName);
-						gui_folders.tools.add(gui_options.tools, cornerstoneTools.SmartBrushTool.toolName);
-					}
-					else
-					{
-						gui_folders.tools.add(gui_options.tools, cornerstoneTools.BrushTool.toolName);
-					}
-
-					gui_folders.tools.add(gui_options.tools, cornerstoneTools.WindowLevelTool.toolName);
-					gui_folders.tools.open();
 				}
 
 				if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
@@ -2028,18 +1570,7 @@ export default class Serie extends SerieBase
 					this.single_slice = true;
 				}
 
-				if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-				{
-					// gui_options.tools[cornerstoneTools.NormalBrushTool.toolName]();
-
-					this.toolGroup.setToolActive(cornerstoneTools.NormalBrushTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] });
-				}
-				else
-				{
-					// gui_options.tools[cornerstoneTools.BrushTool.toolName]();
-
-					this.toolGroup.setToolActive(cornerstoneTools.BrushTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] });
-				}
+				this.toolGroup.setToolActive(cornerstoneTools.BrushTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] });
 
 
 
@@ -2051,82 +1582,21 @@ export default class Serie extends SerieBase
 					{
 						if (evt.ctrlKey || evt.metaKey)
 						{
-							if (this.toolGroup._toolInstances.Brush.configuration.erase)
-							{
-								this.toolGroup._toolInstances.Brush.configuration.erase = false;
-								this.toolGroup._toolInstances.NormalBrush.configuration.erase = false;
-								this.toolGroup._toolInstances.SmartBrush.configuration.erase = false;
+							this.toolGroup._toolInstances.Brush.configuration.erase = !this.toolGroup._toolInstances.Brush.configuration.erase;
 
-								if (this.single_slice)
-								{
-									this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-									this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-									this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'FILL_INSIDE_CIRCLE';
-								}
-								else
-								{
-									this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-									this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-									this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'FILL_INSIDE_SPHERE';
-								}
+							if (this.toolGroup._toolInstances.Brush.configuration.activeStrategy.includes('ERASE'))
+							{
+								this.toolGroup._toolInstances.Brush.configuration.activeStrategy = this.toolGroup._toolInstances.Brush.configuration.activeStrategy.replace('ERASE', 'FILL');
 							}
 							else
 							{
-								this.toolGroup._toolInstances.Brush.configuration.erase = true;
-								this.toolGroup._toolInstances.NormalBrush.configuration.erase = true;
-								this.toolGroup._toolInstances.SmartBrush.configuration.erase = true;
-
-								if (this.single_slice)
-								{
-									this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-									this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-									this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'ERASE_INSIDE_CIRCLE';
-								}
-								else
-								{
-									this.toolGroup._toolInstances.Brush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-									this.toolGroup._toolInstances.NormalBrush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-									this.toolGroup._toolInstances.SmartBrush.configuration.activeStrategy = 'ERASE_INSIDE_SPHERE';
-								}
+								this.toolGroup._toolInstances.Brush.configuration.activeStrategy = this.toolGroup._toolInstances.Brush.configuration.activeStrategy.replace('FILL', 'ERASE');
 							}
 
 							cornerstoneTools.utilities.triggerAnnotationRenderForViewportIds(this.renderingEngine, this.viewport_inputs.map(_ => _.viewportId));
 						}
-						// else
-						// {
-						// 	if (evt.code === 'KeyS')
-						// 	{
-						// 		this.doMarchingCubes();
-						// 	}
-						// 	else if (evt.code === 'KeyR')
-						// 	{
-						// 		this.clearSegmentation();
-						// 		// this.renderSegmentation();
-						// 		cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
-						// 	}
-						// 	else if (evt.code === 'KeyN')
-						// 	{
-						// 		const segm_index_next = (this.current_segm + 1) % this.segmentations.length;
-
-						// 		this.segmentations[segm_index_next] && this.activateSegmentation(segm_index_next);
-						// 	}
-						// }
 					},
 				);
-
-				{
-					this.aaa = null;
-
-					window.addEventListener
-					(
-						'mouseup',
-
-						() =>
-						{
-							this.aaa = null;
-						},
-					);
-				}
 			}
 
 			if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
@@ -2171,64 +1641,17 @@ export default class Serie extends SerieBase
 
 		const toolGroup = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP' + Date.now());
 
-		toolGroup.addTool(cornerstoneTools.StackScrollMouseWheelTool.toolName);
-		toolGroup.setToolActive(cornerstoneTools.StackScrollMouseWheelTool.toolName);
+		toolGroup.addTool(cornerstoneTools.StackScrollTool.toolName);
+		toolGroup.setToolActive(cornerstoneTools.StackScrollTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Wheel } ] });
 		toolGroup.addTool(cornerstoneTools.LengthTool.toolName);
 		toolGroup.addTool(cornerstoneTools.PanTool.toolName);
 		toolGroup.addTool(cornerstoneTools.ZoomTool.toolName);
 		toolGroup.addTool(cornerstoneTools.WindowLevelTool.toolName);
-		toolGroup.addTool(cornerstoneTools.SegmentationDisplayTool.toolName);
-		toolGroup.setToolEnabled(cornerstoneTools.SegmentationDisplayTool.toolName);
-		toolGroup.addTool(cornerstoneTools.BrushTool.toolName);
-		toolGroup.addTool(cornerstoneTools.NormalBrushTool.toolName);
-		toolGroup.addTool(cornerstoneTools.SmartBrushTool.toolName);
-
-		toolGroup._toolInstances.StackScrollMouseWheel.constructor.prototype.mouseWheelCallback = mouseWheelCallback;
-
-		toolGroup._toolInstances.SegmentationDisplay.renderSegmentation = function (toolGroupId) {
-			const toolGroup = cornerstoneTools.ToolGroupManager.getToolGroup(toolGroupId);
-			if (!toolGroup) {
-					return;
-			}
-			const toolGroupSegmentationRepresentations = cornerstoneTools.segmentation.state.getSegmentationRepresentations(toolGroupId);
-			if (!toolGroupSegmentationRepresentations ||
-					toolGroupSegmentationRepresentations.length === 0) {
-					return;
-			}
-			const toolGroupViewports = toolGroup.viewportsInfo.map(({ renderingEngineId, viewportId }) => {
-					const enabledElement = getEnabledElementByIds(viewportId, renderingEngineId);
-					if (enabledElement) {
-							return enabledElement.viewport;
-					}
-			});
-			const segmentationRenderList = toolGroupSegmentationRepresentations.map((representation) => {
-					const config = this._getMergedRepresentationsConfig(toolGroupId);
-					const viewportsRenderList = [];
-					const renderers = {
-							[Representations.Labelmap]: labelmapDisplay,
-							[Representations.Contour]: contourDisplay,
-							[Representations.Surface]: surfaceDisplay,
-					};
-					if (representation.type === cornerstoneTools.Enums.SegmentationRepresentations.Contour) {
-							this.addPlanarFreeHandToolIfAbsent(toolGroupId);
-					}
-					const display = renderers[representation.type];
-					for (const viewport of toolGroupViewports) {
-							if (display === labelmapDisplay)
-							{
-								viewport.getActors().find(actor => actor !== viewport.getDefaultActor())?.actor.getProperty().setRGBTransferFunction(0, null);
-							}
-							const renderedViewport = display.render(viewport, representation, config);
-							viewportsRenderList.push(renderedViewport);
-					}
-					return viewportsRenderList;
-			});
-			Promise.allSettled(segmentationRenderList).then(() => {
-					toolGroupViewports.forEach((viewport) => {
-							viewport.render();
-					});
-			});
-	};
+		toolGroup.addTool(cornerstoneTools.BrushTool.toolName, { activeStrategy: 'FILL_INSIDE_SPHERE' });
+		toolGroup.addTool(cornerstoneTools.PaintFillTool.toolName);
+		toolGroup.addTool(cornerstoneTools.CircleScissorsTool.toolName);
+		toolGroup.addTool(cornerstoneTools.RegionSegmentTool.toolName, { positiveSeedVariance: 0.1, negativeSeedVariance: 0.1 });
+		toolGroup.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName);
 
 
 
@@ -2247,103 +1670,6 @@ export default class Serie extends SerieBase
 		this.toolGroup = toolGroup;
 		this.toolGroup2 = toolGroup2;
 	}
-
-	createGui2 ()
-	{
-		if (this.dat_gui_segm?.destroy)
-		{
-			this.dat_gui_segm.domElement.parentNode.removeChild(this.dat_gui_segm.domElement);
-
-			this.dat_gui_segm.destroy();
-
-			this.dat_gui_segm = null;
-		}
-
-		const dat_gui_segm = new dat.GUI({ autoPlace: false });
-
-		if (!window.__CONFIG__.features?.includes('web'))
-		{
-			dat_gui_segm.domElement.style.display = 'none';
-		}
-
-		dat_gui_segm.domElement.style.position = 'absolute';
-		dat_gui_segm.domElement.style.zIndex = 999999;
-		dat_gui_segm.domElement.style.top = '0px';
-		dat_gui_segm.domElement.style.left = '-87px';
-
-		dat_gui_segm.domElement
-			.addEventListener
-			(
-				'mousedown',
-
-				evt =>
-				{
-					evt.preventDefault();
-					evt.stopPropagation();
-					evt.stopImmediatePropagation();
-				},
-			);
-
-		// this.viewport_inputs.find(viewport_input => (viewport_input.orientation === 'axial')).element.appendChild(dat_gui_segm.domElement);
-		// document.body.appendChild(dat_gui_segm.domElement);
-		this.viewport_inputs[0].element.appendChild(dat_gui_segm.domElement);
-
-		dat_gui_segm
-			.add
-			(
-				{ 'add segmentation': () => this.addSegmentation() },
-
-				'add segmentation',
-			);
-
-		this.dat_gui_segm = dat_gui_segm;
-	}
-
-	// async initCommonWorkers (workers, data = {})
-	// {
-	// 	await Promise
-	// 		.all
-	// 		(
-	// 			workers
-	// 				.map
-	// 				(
-	// 					worker =>
-	// 					(
-	// 						new Promise
-	// 						(
-	// 							resolve =>
-	// 							{
-	// 								worker.onmessage = resolve;
-
-	// 								worker
-	// 									.postMessage
-	// 									({
-	// 										serie:
-	// 										{
-	// 											volume:
-	// 											{
-	// 												dimensions: this.volume.dimensions,
-	// 												scalarData: this.volume.scalarData,
-	// 											},
-
-	// 											volume_segm:
-	// 											{
-	// 												scalarData: this.volume_segm.scalarData,
-	// 											},
-
-	// 											// volume_segmented_data: this.volume_segmented_data,
-
-	// 											scalar_data2: this.scalar_data2.byteOffset,
-
-	// 											...data,
-	// 										},
-	// 									});
-	// 							},
-	// 						)
-	// 					),
-	// 				),
-	// 		);
-	// }
 
 	async initCommonWorkers (worker_count)
 	{
@@ -2376,13 +1702,6 @@ export default class Serie extends SerieBase
 											{
 												scalarData: this.volume_segm.scalarData,
 											},
-
-											// scalar_data2: this.scalar_data2.byteOffset,
-											scalar_data2: this.scalar_data2,
-
-											blurred: this.blurred,
-
-											// wasm: { code: self.wasm.code, memory: self.wasm.memory, stack_pointer: self.wasm.options.thread_stack_size },
 										},
 									});
 							},
@@ -2432,43 +1751,6 @@ export default class Serie extends SerieBase
 		);
 	}
 
-	// async runCommonWorkers (workers)
-	// {
-	// 	await Promise
-	// 		.all
-	// 		(
-	// 			workers
-	// 				.map
-	// 				(
-	// 					(worker, worker_index) =>
-	// 					(
-	// 						new Promise
-	// 						(
-	// 							resolve =>
-	// 							{
-	// 								worker.onmessage = resolve;
-
-	// 								const segment = Math.floor(dimension_i / this.blur_workers.length);
-
-	// 								let _i_min = Math.floor(worker_index * segment);
-	// 								let _i_max = _i_min + segment;
-
-	// 								if (worker_index === (this.blur_workers.length - 1))
-	// 								{
-	// 									_i_max = dimension_i;
-	// 								}
-
-	// 								_i_min += i_min;
-	// 								_i_max += i_min;
-
-	// 								worker.postMessage([ _i_min, _i_max, j_min, j_max, k_min, k_max, this.blur ]);
-	// 							},
-	// 						)
-	// 					),
-	// 				),
-	// 		);
-	// }
-
 	downloadStlBinary ()
 	{
 		const result = three_stl_exporter.parse(this.three_scene, { binary: true });
@@ -2485,6 +1767,7 @@ export default class Serie extends SerieBase
 
 	async downloadSegmentation ()
 	{
+		// this.volume_segm.volume_segm.voxelManager.getCompleteScalarDataArray();
 		downloadArraybuffer(this.volume_segm.scalarData.slice().buffer, this.segmentations[this.current_segm].name);
 
 		// const zip = new JSZip();
@@ -2496,27 +1779,20 @@ export default class Serie extends SerieBase
 		// downloadZip(content, this.segmentations[this.current_segm].name);
 	}
 
-	downloadSegmentation2 (data)
-	{
-		downloadArraybuffer(data.buffer, 'segm');
-	}
-
 	/**
 	 * Convert volume data to NIfTI format and download
 	 * @param {Object} options - Conversion options
 	 * @param {string} options.filename - Output filename (without extension)
-	 * @param {boolean} options.includeSegmentation - Whether to include segmentation data
+	 * @param {boolean} options.segmentation - Whether to include segmentation data
 	 * @param {number} options.dataType - NIfTI data type (default: 16 for float32)
 	 */
 	async convertVolumeToNifti(options = {})
 	{
 		const {
 			filename = 'volume',
-			includeSegmentation = false,
+			segmentation = false,
 			dataType = 16 // 16 = float32, 4 = int16, 8 = int32
 		} = options;
-
-		LOG('dataType', dataType)
 
 		if (!this.volume) {
 			throw new Error('No volume data available for conversion');
@@ -2531,19 +1807,15 @@ export default class Serie extends SerieBase
 			const origin = this.volume.origin;
 			const direction = this.volume.direction;
 
-			LOG('scalarData', scalarData, this.volume)
-
 			// Prepare data array
 			let dataArray = this.volume_segm.scalarData;
-			if (includeSegmentation) {
+			if (segmentation) {
 				// Use segmentation data if available
-				dataArray = new Float32Array(this.volume_segm.scalarData);
+				dataArray = new Float32Array(this.volume_segm.voxelManager.getCompleteScalarDataArray());
 			} else {
 				// Use original volume data
 				dataArray = new Float32Array(scalarData);
 			}
-
-			LOG('dataArray', dataArray)
 
 			let cal_min = Infinity;
 			let cal_max = -Infinity;
@@ -2587,16 +1859,14 @@ export default class Serie extends SerieBase
 				srow_x: [spacing[0], 0, 0, origin[0]],
 				srow_y: [0, spacing[1], 0, origin[1]],
 				srow_z: [0, 0, spacing[2], origin[2]],
-				intent_name: includeSegmentation ? 'Segmentation' : 'Volume'
+				intent_name: segmentation ? 'Segmentation' : 'Volume'
 			});
-
-			LOG('niftiHeader', niftiHeader)
 
 			// Create NIfTI file
 			const niftiFile = NIfTIWriter.write(niftiHeader, dataArray);
 
 			// Download the file
-			downloadArraybuffer(niftiFile, `${filename}.nii`);
+			downloadArraybuffer(niftiFile, `${filename}`);
 
 			// Read and verify the created NIfTI file
 			this.readNiftiFile(niftiFile, filename);
@@ -2606,7 +1876,7 @@ export default class Serie extends SerieBase
 				spacing,
 				origin,
 				dataType,
-				includeSegmentation
+				segmentation
 			});
 
 		} catch (error) {
@@ -2725,16 +1995,8 @@ export default class Serie extends SerieBase
 		try {
 			LOG('Reading NIfTI file:', filename ,niftiFile);
 
-			// LOG('nifti', nifti.parse(niftiFile));
-
 			const header = niftiReader.readHeader(niftiFile)
 
-			LOG('nofti-reader-js', header);
-			LOG(niftiReader)
-			LOG('nofti-reader-js2', niftiReader.readImage(header, niftiFile));
-
-
-			LOG(niftiReader)
 			// Parse the NIfTI file
 			const niftiData = nifti.parse(niftiFile);
 
@@ -2813,154 +2075,9 @@ export default class Serie extends SerieBase
 
 		return this.convertVolumeToNifti({
 			filename,
-			includeSegmentation: true,
+			segmentation: true,
 			dataType: 8 // int32 for segmentation labels
 		});
-	}
-
-	async createBlurWorkers ()
-	{
-		this.blur_workers =
-			new Array((navigator.hardwareConcurrency || 8) - 1)
-				.fill(null)
-				.map(() => new BlurWorker());
-
-		await this.initCommonWorkers(this.blur_workers, { blurred1: this.blurred1, blurred2: this.blurred2 });
-
-		return this.blur_workers;
-	}
-
-	terminateBlurWorkers ()
-	{
-		this.blur_workers.forEach(worker => worker.terminate());
-	}
-
-	async blurVolume (bounding_box)
-	{
-		const [ i_min, i_max, j_min, j_max, k_min, k_max ] = bounding_box;
-
-		const dimension_i = i_max - i_min + 1;
-
-		await Promise
-			.all
-			(
-				this.blur_workers
-					.map
-					(
-						(worker, worker_index) =>
-						(
-							new Promise
-							(
-								resolve =>
-								{
-									worker.onmessage = resolve;
-
-									const segment = Math.floor(dimension_i / this.blur_workers.length);
-
-									let _i_min = Math.floor(worker_index * segment);
-									let _i_max = _i_min + segment;
-
-									if (worker_index === (this.blur_workers.length - 1))
-									{
-										_i_max = dimension_i;
-									}
-
-									_i_min += i_min;
-									_i_max += i_min;
-
-									worker.postMessage([ _i_min, _i_max, j_min, j_max, k_min, k_max, this.blur ]);
-								},
-							)
-						),
-					),
-			);
-
-		this.blurred = this.blur % 2 ? this.blurred1 : this.blurred2;
-	}
-
-	async setBlurred ()
-	{
-		const tt = Date.now();
-
-		let i_min = Infinity;
-		let i_max = -Infinity;
-		let j_min = Infinity;
-		let j_max = -Infinity;
-		let k_min = Infinity;
-		let k_max = -Infinity;
-
-		for (let i = 0; i < this.volume.dimensions[0]; ++i)
-		{
-			for (let j = 0; j < this.volume.dimensions[1]; ++j)
-			{
-				for (let k = 0; k < this.volume.dimensions[2]; ++k)
-				{
-					if (this.volume.scalarData[this.ijkToLinear(i, j, k)] >= 0)
-					{
-						i_min = Math.min(i_min, i);
-						i_max = Math.max(i_max, i);
-						j_min = Math.min(j_min, j);
-						j_max = Math.max(j_max, j);
-						k_min = Math.min(k_min, k);
-						k_max = Math.max(k_max, k);
-					}
-				}
-			}
-		}
-
-		LOG(Date.now() - tt)
-
-		await this.createBlurWorkers();
-
-		await this.blurVolume([ i_min, i_max, j_min, j_max, k_min, k_max ]);
-
-		this.terminateBlurWorkers();
-
-		// this.volume.scalarData.set(this.blurred);
-
-		// this.volume.imageData.modified();
-
-		// this.renderingEngine.render();
-
-		LOG(Date.now() - tt)
-	}
-
-	async downloadSegmentationSlices (target)
-	{
-		const zip = new JSZip();
-
-		const [ projection_width, projection_height, projection_depth ] = this.getProjectionSizes(target);
-
-		for (let slice_index = 0; slice_index < projection_depth; ++slice_index)
-		{
-			const slice_data = new Uint8Array(projection_width * projection_height);
-
-			for (let slice_pixel_x = 0, slice_pixel_y = 0; slice_pixel_x < projection_width;)
-			{
-				const voxel_index_slice = this.getIndexSlice(slice_pixel_x, slice_pixel_y, projection_height);
-
-				const voxel_index_volume = this.getIndexVolume(target, slice_index, slice_pixel_x, slice_pixel_y);
-
-				slice_data[voxel_index_slice] = this.volume_segm.scalarData[voxel_index_volume];
-
-
-
-				++slice_pixel_y;
-
-				if (slice_pixel_y >= projection_height)
-				{
-					slice_pixel_y = 0;
-
-					++slice_pixel_x;
-				}
-			}
-
-			zip.file(slice_index + 1, slice_data.buffer);
-		}
-
-		const content = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-
-		downloadZip(content, 'segmentation.zip');
 	}
 
 	addSegmentation (name)
@@ -2999,92 +2116,7 @@ export default class Serie extends SerieBase
 
 		this.segmentations.push(segm);
 
-		this.dat_gui_segm
-			.add
-			(
-				{ [ segm_index ]: segm_name },
-
-				segm_index,
-			);
-
-		const [ { domElement } ] =
-			this.dat_gui_segm.__controllers
-				.filter(contr => (contr.property === segm_index));
-
-		{
-			const color_input = document.createElement('input');
-
-			color_input.type = 'color';
-
-			color_input.style.position = 'absolute';
-			color_input.style.right = 0;
-			color_input.style.top = 0;
-			color_input.style.height = '100%';
-
-			const hexToRGB = hex => [ parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16) ];
-
-			const updateColor = evt =>
-			{
-				// this.viewport_inputs
-				// 	.forEach
-				// 	(
-				// 		vi =>
-				// 		{
-				// 			this.renderingEngine.getViewport(vi.viewportId).getActor(this.segmentation_representation_ids[0]).actor.getProperty().setRGBTransferFunction(0, null);
-				// 		},
-				// 	);
-
-				cornerstoneTools.segmentation.config.color.setColorForSegmentIndex(this.toolGroup.id, this.segmentation_representation_ids[0], segm_index + 2, [ ...hexToRGB(evt.target.value), 50 ]);
-
-				cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationRepresentationModified(this.toolGroup.id, this.segmentation_representation_ids[0]);
-			};
-
-			color_input.addEventListener('input', updateColor);
-			color_input.addEventListener('change', updateColor);
-
-			const color = cornerstoneTools.segmentation.config.color.getColorForSegmentIndex(this.toolGroup.id, this.segmentation_representation_ids[0], segm_index + 2);
-
-			const componentToHex = comp =>
-			{
-				const hex = comp.toString(16);
-
-				return hex.length === 1 ? '0' + hex : hex;
-			};
-
-			const rgbToHex = (r, g, b) => `#${ componentToHex(r) }${ componentToHex(g) }${ componentToHex(b) }`;
-
-			color_input.value = rgbToHex(...color.slice(0, 3));
-
-			domElement.parentNode.parentNode.appendChild(color_input);
-		}
-
-		domElement.parentNode.parentNode.style.position = 'relative';
-		domElement.parentNode.parentNode.style.cursor = 'pointer';
-
-		domElement
-			.parentNode
-				.parentNode
-					.onclick = () => this.activateSegmentation(segm_index);
-
-		domElement.getElementsByTagName('INPUT')[0].addEventListener
-		(
-			'dblclick',
-
-			evt => evt.target.focus(),
-		);
-
-		domElement.getElementsByTagName('INPUT')[0].addEventListener
-		(
-			'input',
-
-			evt => { segm.name = evt.target.value; },
-		);
-
-		domElement
-			.parentNode
-			.getElementsByClassName('property-name')[0].style.display = 'none';
-
-		domElement.onclick = evt => evt.stopImmediatePropagation();
+		addSegmentationGUI(this, segm, segm_index, segm_name);
 
 		return segm;
 	}
@@ -3116,13 +2148,9 @@ export default class Serie extends SerieBase
 	{
 		let segm = this.segmentations[this.current_segm];
 
-		// LOG(segm, this.segmentations, this.current_segm)
-
 		if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
 		{
 			segm.a.set(this.volume_segm.scalarData);
-			// segm.b.set(this.volume_segmented_data);
-			segm.c.set(this.scalar_data2);
 		}
 		else
 		{
@@ -3141,13 +2169,9 @@ export default class Serie extends SerieBase
 
 		segm = this.segmentations[this.current_segm];
 
-		// LOG(segm, this.segmentations, this.current_segm)
-
 		if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
 		{
 			this.volume_segm.scalarData.set(segm.a);
-			// this.volume_segmented_data.set(segm.b);
-			this.scalar_data2.set(segm.c);
 
 			this.recomputeBoundingBox();
 		}
@@ -3166,22 +2190,10 @@ export default class Serie extends SerieBase
 			);
 		}
 
-		{
-			const [ { domElement } ] =
-				this.dat_gui_segm.__controllers
-					.filter(contr => (contr.property === segm_index));
-
-			domElement
-				.closest('ul')
-				.querySelectorAll('.cr.string')
-				.forEach(sel => (sel.style.borderLeftWidth = '3px'));
-
-			domElement.closest('li').style.borderLeftWidth = '10px';
-		}
+		activateSegmentationGUI(this, segm, segm_index);
 
 		try
 		{
-			// this.renderSegmentation();
 			cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
 		}
 		catch (_) {}
@@ -3199,8 +2211,6 @@ export default class Serie extends SerieBase
 			bounding_box[2].max = -Infinity;
 
 			this.volume_segm.scalarData.fill(0);
-			// this.volume_segmented_data.fill(0);
-			this.scalar_data2.fill(0);
 		}
 		else
 		{
@@ -3208,23 +2218,9 @@ export default class Serie extends SerieBase
 		}
 	}
 
-	async createVolumeSegmentation (volumeId, initial_data)
+	async createVolumeSegmentation (volumeId)
 	{
-		const scalarData = getSharedFloat32Array(this.volume.scalarData.length);
-
-		if (initial_data)
-		{
-			scalarData.set(new Float32Array(initial_data));
-		}
-
-		const volume =
-			// await cornerstone.volumeLoader.createAndCacheDerivedVolume2
-			await createAndCacheDerivedVolume
-			(
-				this.volume.volumeId,
-
-				{ volumeId, scalarData },
-			);
+		const volume = await cornerstone.volumeLoader.createAndCacheDerivedLabelmapVolume(this.volume.volumeId, { volumeId });
 
 		volume.imageData
 			.setDirection
@@ -3258,28 +2254,18 @@ export default class Serie extends SerieBase
 			},
 		]);
 
-		{
-			this.segmentation_representation_ids =
-				await cornerstoneTools.segmentation.addSegmentationRepresentations
-				(
-					this.toolGroup.id,
+		const segmentation_viewports = {};
 
-					[
-						{
-							segmentationId: volume.volumeId,
-							type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+		this.viewport_inputs
+			.forEach
+			(
+				viewport_input =>
+				{
+					segmentation_viewports[viewport_input.viewportId] = [ { segmentationId: volume.volumeId } ];
+				},
+			);
 
-							options:
-							{
-								colorLUTOrIndex: color_LUT,
-							},
-						},
-					]
-				);
-		}
-
-		// volume.repr = this.segmentation_representation_ids;
-		// volume.__tg = this.toolGroup;
+		await cornerstoneTools.segmentation.addLabelmapRepresentationToViewportMap(segmentation_viewports);
 
 		return volume;
 	}
@@ -3292,8 +2278,6 @@ export default class Serie extends SerieBase
 				_this =>
 				{
 					_this.toolGroup._toolInstances.Brush.configuration.brushSize = size;
-					_this.toolGroup._toolInstances.NormalBrush.configuration.brushSize = size;
-					_this.toolGroup._toolInstances.SmartBrush.configuration.brushSize = size;
 				},
 			);
 	}
@@ -3301,25 +2285,6 @@ export default class Serie extends SerieBase
 	renderThreeScene ()
 	{
 		this.three_renderer.render(this.three_scene, this.three_camera);
-	}
-
-	renderSegmentation ()
-	{
-		// this.volume_segm.vtkOpenGLTexture.update3DFromRaw2(this.volume_segm.scalarData);
-
-		// this.volume_segm.imageData.modified();
-
-		this.toolGroup._toolInstances.SegmentationDisplay.renderSegmentation(this.toolGroup.id);
-	}
-
-	renderSegmentation2 (texture_data, i_min, i_max, j_min, j_max, k_min, k_max)
-	{
-
-		this.volume_segm.vtkOpenGLTexture.update3DFromRaw3(texture_data, i_min, i_max + 1, j_min, j_max + 1, k_min, k_max + 1);
-
-		this.volume_segm.imageData.modified();
-
-		this.toolGroup._toolInstances.SegmentationDisplay.renderSegmentation(this.toolGroup.id);
 	}
 
 	async doMarchingCubes ()
@@ -3368,15 +2333,6 @@ export default class Serie extends SerieBase
 			}
 		];
 
-		// const { points, polys, colors } =
-		// 	(
-		// 		await this.runCommonWorker
-		// 		(
-		// 			this.marching_cubes_worker,
-
-		// 			{ calls },
-		// 		)
-		// 	).data;
 		const { points, polys, colors } = (await this.runCommonWorker(0, { calls })).data;
 
 		this.vertices = points;
@@ -3418,7 +2374,6 @@ export default class Serie extends SerieBase
 			this.volume_segm.scalarData[i] = (this.volume_segm.scalarData[i] === 1 ? 2 : this.volume_segm.scalarData[i]);
 		}
 
-		// this.renderSegmentation();
 		cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
 
 		this.saved_scene =

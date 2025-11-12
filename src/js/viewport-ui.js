@@ -4,20 +4,10 @@ import { STLExporter as THREE_STLExporter } from 'three/examples/jsm/exporters/S
 
 // Volume rendering
 import '@kitware/vtk.js/Rendering/Profiles/Volume';
-// import vtkRenderer from '@kitware/vtk.js/Rendering//Core/Renderer';
-// import vtkRenderWindow from '@kitware/vtk.js/Rendering/Core/RenderWindow';
-// import vtkInteractorStyleTrackballCamera from '@kitware/vtk.js/Interaction/Style/InteractorStyleTrackballCamera';
-// import vtkRenderWindowInteractor from '@kitware/vtk.js/Rendering/Core/RenderWindowInteractor';
-// import vtkOpenGLRenderWindow from '@kitware/vtk.js/Rendering/OpenGL/RenderWindow';
-// import vtkVolume from '@kitware/vtk.js/Rendering/Core/Volume';
-// import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
-// import vtkColorTransferFunction  from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
-// import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
 import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
-import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
-import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkColorMaps from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/ColorMaps';
 
+import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
 import JSZip from 'jszip';
@@ -128,10 +118,12 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
   label.className = 'input-element -text'
   label.id = `label-${ viewport_input.viewportId }`;
 
+	const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+
   {
     slider.type = 'range';
     slider.min = 0;
-    slider.max = _this.getProjectionSizes(viewport_input.orientation, _this.volume)[2] - 1;
+    slider.max = viewport.getNumberOfSlices() - 1;
     slider.value = Math.floor(slider.max / 2);
 
     slider.className = 'range-vertical';
@@ -149,9 +141,9 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
         {
           const imageIndex = parseInt(evt.target.value, 10);
 
-          cornerstoneTools.utilities.jumpToSlice(viewport_input.element, { imageIndex });
-
           const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+
+					cornerstone.utilities.jumpToSlice(viewport.element, { imageIndex });
 
           label.innerHTML = `${ imageIndex + 1 }/${ parseInt(slider.max, 10) + 1 }`;
 
@@ -161,6 +153,25 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
           }
         },
       );
+
+		viewport_input.element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, (evt) => {
+			const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+
+			const camera = evt.detail.camera;
+			const { focalPoint, viewPlaneNormal } = camera;
+
+			const { actor } = viewport.getDefaultActor();
+
+			const sliceRange = cornerstone.utilities.getSliceRange(actor, viewPlaneNormal, focalPoint);
+			const { min, max, current } = sliceRange;
+
+			const imageIndex = Math.round((viewport.getNumberOfSlices() - 1) * ((current - min) / (max - min)));
+
+			slider.value = imageIndex;
+			label.innerHTML = parseInt(slider.value, 10) + 1;
+
+			return imageIndex;
+		});
 
     const style_tag = document.createElement('style');
     style_tag.innerHTML =
@@ -191,7 +202,7 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
       appearance: none;
 
       width: 10px;
-      height: ${ 100 / (_this.getProjectionSizes(viewport_input.orientation, _this.volume)[2]) }%;
+      height: ${ 100 / (viewport.getNumberOfSlices()) }%;
       min-height: 6px;
       background-color: #26374c;
       // border-radius: 5px;
@@ -200,7 +211,7 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
     #slider-${ viewport_input.viewportId }::-moz-range-thumb
     {
       width: 10px;
-      height: ${ 100 / (_this.getProjectionSizes(viewport_input.orientation, _this.volume)[2]) }%;
+      height: ${ 100 / (viewport.getNumberOfSlices()) }%;
       min-height: 6px;
       background-color: #26374c;
       // border-radius: 5px;
@@ -226,206 +237,164 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
 
   viewport_input.element.appendChild(slider_container);
 
-  // document.querySelector('input[type="range"]::-webkit-slider-thumb').style.height = `${ 100 / slider.max }%`;
-  // document.querySelector('input[type="range"]::-moz-range-thumb').style.height = `${ 100 / slider.max }%`;
-
-  // const download_button = document.createElement('button');
-
-  // {
-  //   download_button.innerHTML = 'Download segmentation slices';
-
-  //   download_button.style.position = 'absolute';
-  //   download_button.style.left = 1;
-  //   download_button.style.bottom = 1;
-
-  //   download_button
-  //     .addEventListener
-  //     (
-  //       'click',
-
-  //       () => _this.downloadSegmentationSlices(viewport_input.orientation),
-  //     );
-
-  //   viewport_input.element.appendChild(download_button);
-  // }
-
   if (viewport_input_index === 0)
   {
     const download_section = document.createElement('div');
     download_section.style.position = 'absolute';
-    download_section.style.left = 1;
-    download_section.style.bottom = 1;
+    download_section.style.left = '1px';
+    download_section.style.bottom = '1px';
+
+		// {
+		// 	const download_button = document.createElement('button');
+
+		// 	download_button.className = 'input-element -button';
+		// 	download_button.innerHTML = '\u2193 NR';
+
+		// 	download_button
+		// 		.addEventListener
+		// 		(
+		// 			'click',
+
+		// 			async evt =>
+		// 			{
+		// 				evt.stopPropagation();
+
+		// 				_this.readNII();
+		// 			},
+		// 		);
+
+		// 	download_button.addEventListener('mousedown',evt => evt.stopPropagation());
+		// 	download_button.addEventListener('mousemove',evt => evt.stopPropagation());
+		// 	download_button.addEventListener('mouseup',evt => evt.stopPropagation());
+
+		// 	download_section.appendChild(download_button);
+		// }
+
+    // {
+    //   const download_button = document.createElement('button');
+
+    //   download_button.className = 'input-element -button';
+    //   download_button.innerHTML = '\u2193 S';
+
+    //   download_button
+    //     .addEventListener
+    //     (
+    //       'click',
+
+    //       async evt =>
+    //       {
+    //         evt.stopPropagation();
+
+    //         {
+    //           const zip = new JSZip();
+
+    //           const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+
+    //           const series = viewport.__series;
+
+    //           series.activateSegmentation(series.current_segm);
+
+    //           for (let i = 0; i < series.segmentations.length; ++i)
+    //           {
+    //             const segm = series.segmentations[i];
+
+    //             const data_orig = segm.a;
+
+    //             const data_uint8 = new Uint8Array(data_orig.buffer);
+
+    //             zip.file(`${ series.imageIds.series_id }:Segmentation`, data_uint8);
+    //           }
+
+    //           const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
+
+    //           window.downloadZip(data_zip, 'Segmentation');
+    //         }
+    //       },
+    //     );
+
+    //   download_button.addEventListener('mousedown',evt => evt.stopPropagation());
+    //   download_button.addEventListener('mousemove',evt => evt.stopPropagation());
+    //   download_button.addEventListener('mouseup',evt => evt.stopPropagation());
+
+    //   download_section.appendChild(download_button);
+    // }
 
 		{
-			const download_button = document.createElement('button');
+			const download_section2 = document.createElement('div');
 
-			download_button.className = 'input-element -button';
-			download_button.innerHTML = '\u2193 NR';
+			download_section2.style.position = 'absolute';
+			download_section2.style.left = '10px';
+			download_section2.style.bottom = '10px';
+			download_section2.style.height = '20px';
 
-			download_button
-				.addEventListener
-				(
-					'click',
+			const select = document.createElement('select');
+			select.style.display = 'inline-block';
+			select.style.height = '100%';
+			const options = [
+				{ value: '1', text: 'Data as DICOM' },
+				{ value: '2', text: 'Data as NIfTI' },
+				{ value: '3', text: 'Segmentation as NIfTI' },
+			];
 
-					async evt =>
+			options.forEach(data => {
+				const optionElement = document.createElement('option');
+				optionElement.value = data.value;
+				optionElement.textContent = data.text;
+				select.appendChild(optionElement);
+			});
+
+			select.addEventListener('change', (evt) => {
+				console.log(evt.target.value);
+			});
+
+			const button = document.createElement('button');
+			button.style.display = 'inline-block';
+			button.style.height = '100%';
+			button.style.marginLeft = '2px';
+			button.style.marginRight = '2px';
+			button.className = 'input-element -button';
+			button.innerHTML = 'Download';
+			button.addEventListener
+			(
+				'click',
+
+				async () =>
+				{
+					switch (select.value)
 					{
-						evt.stopPropagation();
+						case '1':
+						{
+							const zip = new JSZip();
 
-						_this.readNII();
-					},
-				);
+							_this.imageIds.files.forEach(file => zip.file(file.name, file.arrayBuffer()));
 
-			download_button.addEventListener('mousedown',evt => evt.stopPropagation());
-			download_button.addEventListener('mousemove',evt => evt.stopPropagation());
-			download_button.addEventListener('mouseup',evt => evt.stopPropagation());
+							const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
 
-			download_section.appendChild(download_button);
+							window.downloadZip(data_zip, `${ _this.imageIds.series_id }.zip`);
+
+							break;
+						}
+						case '2':
+						{
+							_this.convertVolumeToNifti({ filename: `${ _this.imageIds.series_id }.nii`, segmentation: false });
+
+							break;
+						}
+						case '3':
+						{
+							_this.convertVolumeToNifti({ filename: `${ _this.imageIds.series_id }.segmentation.nii`, segmentation: true });
+
+							break;
+						}
+					}
+				},
+			);
+
+			download_section2.appendChild(select);
+			download_section2.appendChild(button);
+
+			viewport_input.element.appendChild(download_section2);
 		}
-
-		{
-			const download_button = document.createElement('button');
-
-			download_button.className = 'input-element -button';
-			download_button.innerHTML = '\u2193 ND';
-
-			download_button
-				.addEventListener
-				(
-					'click',
-
-					async evt =>
-					{
-						evt.stopPropagation();
-
-						_this.convertVolumeToNifti(
-							{
-								filename: `${ _this.imageIds.series_id }.nii`,
-								includeSegmentation: false,
-							}
-						);
-					},
-				);
-
-			download_button.addEventListener('mousedown',evt => evt.stopPropagation());
-			download_button.addEventListener('mousemove',evt => evt.stopPropagation());
-			download_button.addEventListener('mouseup',evt => evt.stopPropagation());
-
-			download_section.appendChild(download_button);
-		}
-
-		{
-			const download_button = document.createElement('button');
-
-			download_button.className = 'input-element -button';
-			download_button.innerHTML = '\u2193 NS';
-
-			download_button
-				.addEventListener
-				(
-					'click',
-
-					async evt =>
-					{
-						evt.stopPropagation();
-
-						_this.convertVolumeToNifti(
-							{
-								filename: `${ _this.imageIds.series_id }.segmentation.nii`,
-								includeSegmentation: true,
-							}
-						);
-					},
-				);
-
-			download_button.addEventListener('mousedown',evt => evt.stopPropagation());
-			download_button.addEventListener('mousemove',evt => evt.stopPropagation());
-			download_button.addEventListener('mouseup',evt => evt.stopPropagation());
-
-			download_section.appendChild(download_button);
-		}
-
-    {
-      const download_button = document.createElement('button');
-
-      download_button.className = 'input-element -button';
-      download_button.innerHTML = '\u2193 D';
-
-      download_button
-        .addEventListener
-        (
-          'click',
-
-          async evt =>
-          {
-            evt.stopPropagation();
-
-            const zip = new JSZip();
-
-            _this.imageIds.files.forEach(file => zip.file(file.name, file.arrayBuffer()));
-
-            const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
-
-            window.downloadZip(data_zip, `${ _this.imageIds.series_id }.zip`);
-          },
-        );
-
-      download_button.addEventListener('mousedown',evt => evt.stopPropagation());
-      download_button.addEventListener('mousemove',evt => evt.stopPropagation());
-      download_button.addEventListener('mouseup',evt => evt.stopPropagation());
-
-      download_section.appendChild(download_button);
-    }
-
-    {
-      const download_button = document.createElement('button');
-
-      download_button.className = 'input-element -button';
-      download_button.innerHTML = '\u2193 S';
-
-      download_button
-        .addEventListener
-        (
-          'click',
-
-          async evt =>
-          {
-            evt.stopPropagation();
-
-            {
-              const zip = new JSZip();
-
-              const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
-
-              const series = viewport.__series;
-
-              series.activateSegmentation(series.current_segm);
-
-              for (let i = 0; i < series.segmentations.length; ++i)
-              {
-                const segm = series.segmentations[i];
-
-                const data_orig = segm.a;
-
-                const data_uint8 = new Uint8Array(data_orig.buffer);
-
-                zip.file(`${ series.imageIds.series_id }:Segmentation`, data_uint8);
-              }
-
-              const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
-
-              window.downloadZip(data_zip, 'Segmentation');
-            }
-          },
-        );
-
-      download_button.addEventListener('mousedown',evt => evt.stopPropagation());
-      download_button.addEventListener('mousemove',evt => evt.stopPropagation());
-      download_button.addEventListener('mouseup',evt => evt.stopPropagation());
-
-      download_section.appendChild(download_button);
-    }
-
-    viewport_input.element.appendChild(download_section);
   }
 };
 
@@ -614,6 +583,7 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
 
     window.__segm = () =>
     {
+			// this.volume_segm.volume_segm.voxelManager.getCompleteScalarDataArray();
       const segmentIndex = cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(_this.volume_segm.volumeId);
 
       const clipping_planes = mapper.getClippingPlanes();
@@ -643,12 +613,10 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
             )
             {
               _this.volume_segm.scalarData[i] = segmentIndex;
-              // _this.volume_segmented_data[i] = _this.volume.scalarData[i];
             }
             else
             {
               _this.volume_segm.scalarData[i] = 0;
-              // _this.volume_segmented_data[i] = 0;
             }
           }
         }
@@ -1115,101 +1083,5 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
     // }
 
     viewport.element.appendChild(controls);
-
-    // window.__SWITCH_VOLUME__ =
-    // 	() =>
-    // 	{
-    // 		if (mapper.getInputData() === volume.imageData)
-    // 		{
-    // 			// LOG(1, volume.imageData.getPointData().getScalars().getData(), _this.volume_segm.imageData.getPointData().getScalars().getData())
-    // 			const scalars =
-    // 				vtkDataArray.newInstance
-    // 				({
-    // 					values: _this.volume_segmented_data,
-    // 					numberOfComponents: 1,
-    // 					dataType: vtkDataArray.VtkDataTypes.CHAR,
-    // 					// dataType: vtkDataArray.VtkDataTypes.FLOAT,
-    // 					name: 'scalars'
-    // 				});
-
-    // 			const image_data = vtkImageData.newInstance();
-
-    // 			image_data
-    // 				.set
-    // 				({
-    // 					spacing: volume.imageData.getSpacing(),
-    // 					extent: volume.imageData.getExtent(),
-    // 					origin: volume.imageData.getOrigin(),
-    // 					dimensions: volume.imageData.getDimensions(),
-    // 				});
-
-    // 			image_data.getPointData().setScalars(scalars);
-
-    // 			mapper.setInputData(image_data);
-    // 			// LOG(mapper.setInputData)
-    // 			// mapper.setInputData(_this.volume_segm.imageData);
-    // 		}
-    // 		else
-    // 		{
-    // 			mapper.setInputData(volume.imageData);
-    // 		}
-
-    // 		viewport.render();
-    // 	};
-    window.__SWITCH_VOLUME__ =
-      (ind) =>
-      {
-        // const mapper = window.mappers[ind];
-        // if (mapper.getInputData() === volume.imageData)
-        {
-          // const scalars =
-          // 	vtkDataArray.newInstance
-          // 	({
-          // 		values: _this.volume_segmented_data,
-          // 		// values: _this.volume_segm.scalarData,
-          // 		numberOfComponents: 1,
-          // 		// dataType: vtkDataArray.VtkDataTypes.CHAR,
-          // 		dataType: vtkDataArray.VtkDataTypes.FLOAT,
-          // 		name: 'scalars'
-          // 	});
-
-          // const image_data = vtkImageData.newInstance();
-
-          // image_data
-          // 	.set
-          // 	({
-          // 		spacing: volume.imageData.getSpacing(),
-          // 		extent: volume.imageData.getExtent(),
-          // 		origin: volume.imageData.getOrigin(),
-          // 		dimensions: volume.imageData.getDimensions(),
-          // 	});
-
-          // image_data.getPointData().setScalars(scalars);
-
-          // _this.volume.vtkOpenGLTexture.update3DFromRaw(_this.volume_segmented_data);
-
-          // mapper.setInputData(image_data);
-          // mapper.setScalarTexture(volume.vtkOpenGLTexture);
-          mapper.setInputData(_this.volume_segm.imageData);
-          mapper.setScalarTexture(_this.volume_segm.vtkOpenGLTexture);
-          mapper.modified();
-          actor.modified();
-          // LOG(cornerstone.Enums.Events)
-          // triggerEvent(viewport.element, cornerstone.Enums.Events.IMAGE_VOLUME_MODIFIED, {});
-
-
-          // volume.imageData.modified();
-          // mapper.modified();
-          // actor.modified();
-
-          // mapper.setInputData(_this.volume_segm.imageData);
-        }
-        // else
-        // {
-        // 	mapper.setInputData(volume.imageData);
-        // }
-
-        viewport.render();
-      };
   }
 };

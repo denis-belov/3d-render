@@ -5,18 +5,13 @@ import '@babel/polyfill';
 import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
-import { mouseWheelCallback } from './extensions/cornerstonejs/mouseWheelCallback';
-import NormalBrushTool from './extensions/cornerstonejs/NormalBrushTool';
-import SmartBrushTool from './extensions/cornerstonejs/SmartBrushTool';
-
 import initCornerstone from './js/cornerstonejs/utils/demo/helpers/initCornerstone';
 
+import color_LUT from './color-LUT';
 
 
-cornerstone.VolumeViewport3D.prototype.updateClippingPlanesForActors = () => null;
 
-cornerstoneTools.NormalBrushTool = NormalBrushTool;
-cornerstoneTools.SmartBrushTool = SmartBrushTool;
+// cornerstone.VolumeViewport3D.prototype.updateClippingPlanesForActors = () => null;
 
 
 
@@ -39,11 +34,23 @@ cornerstoneTools.SmartBrushTool = SmartBrushTool;
 
 const flags = process.env;
 
-const url_params = new URLSearchParams(window.location.search);
+LOG('window.top', window.top);
+
+const url_params = new URLSearchParams(window.top.location.search);
+
+console.log('url_params', window.location, url_params);
+
+setTimeout(() => {
+	const url_params = new URLSearchParams(window.location.search);
+
+	console.log('url_params', window.location, url_params);
+}, 3000);
 
 for (const [ key, value ] of url_params)
 {
+	console.log('key', key, value);
 	flags[`__${ key.replace(/-/g, '_').toUpperCase() }__`] = value || true;
+	console.log('flags', flags[`__${ key.replace(/-/g, '_').toUpperCase() }__`]);
 }
 
 Object.keys(flags)
@@ -77,6 +84,7 @@ Object.assign(window, flags);
 
 
 
+console.log('window.__CONFIG__', window.__CONFIG__, window.__STUDY__);
 if (window.__CONFIG__ === 'web' || window.__CONFIG__ === 'web2')
 {
 	if (!window.__STUDY__ || typeof window.__STUDY__ !== 'string')
@@ -97,12 +105,12 @@ if (window.__CONFIG__ === 'web' || window.__CONFIG__ === 'web2')
 
 
 
-cornerstone.Viewport.prototype.render = function ()
-{
-	const renderingEngine = this.getRenderingEngine();
-	renderingEngine.renderViewport(this.id);
-	// this.getActors().find(actor => actor !== this.getDefaultActor())?.actor.getProperty().setRGBTransferFunction(0, null);
-};
+// cornerstone.Viewport.prototype.render = function ()
+// {
+// 	const renderingEngine = this.getRenderingEngine();
+// 	renderingEngine.renderViewport(this.id);
+// 	// this.getActors().find(actor => actor !== this.getDefaultActor())?.actor.getProperty().setRGBTransferFunction(0, null);
+// };
 
 
 
@@ -112,62 +120,42 @@ window.addEventListener
 
 	async () =>
 	{
-		// #ifdef WASM
-		{
-			const { default: WasmWrapper } = await import('../../../renderity/wasm-wrapper/src');
-			const { default: wasm_code } = await import('../../../renderity/__deprecated__/cpp-webpack-loader!./cpp/entry-wasm32');
-
-			self.wasm = new WasmWrapper();
-
-			await self.wasm.init
-			({
-				code: wasm_code,
-				memory_params: { initial: 20, maximum: 65536, shared: true },
-				initGlobals: true,
-				debug: true,
-			});
-		}
-		// #endif
-
-
-
 		{
 			await initCornerstone();
 
-			cornerstoneTools.addTool(cornerstoneTools.StackScrollMouseWheelTool);
+			cornerstoneTools.addTool(cornerstoneTools.StackScrollTool);
 			cornerstoneTools.addTool(cornerstoneTools.LengthTool);
 			cornerstoneTools.addTool(cornerstoneTools.PanTool);
 			cornerstoneTools.addTool(cornerstoneTools.ZoomTool);
 			cornerstoneTools.addTool(cornerstoneTools.WindowLevelTool);
-			cornerstoneTools.addTool(cornerstoneTools.SegmentationDisplayTool);
 			cornerstoneTools.addTool(cornerstoneTools.TrackballRotateTool);
 			cornerstoneTools.addTool(cornerstoneTools.BrushTool);
-			cornerstoneTools.addTool(cornerstoneTools.NormalBrushTool);
-			cornerstoneTools.addTool(cornerstoneTools.SmartBrushTool);
+			cornerstoneTools.addTool(cornerstoneTools.PaintFillTool);
+			cornerstoneTools.addTool(cornerstoneTools.CircleScissorsTool);
+			cornerstoneTools.addTool(cornerstoneTools.RegionSegmentTool);
+			cornerstoneTools.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool);
 
-			// const toolGroup = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP');
+			const toolGroup = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP');
 
-			// toolGroup.addTool(cornerstoneTools.StackScrollMouseWheelTool.toolName);
-			// toolGroup.setToolActive(cornerstoneTools.StackScrollMouseWheelTool.toolName);
-			// toolGroup.addTool(cornerstoneTools.LengthTool.toolName);
-			// toolGroup.addTool(cornerstoneTools.PanTool.toolName);
-			// toolGroup.addTool(cornerstoneTools.ZoomTool.toolName);
-			// toolGroup.addTool(cornerstoneTools.WindowLevelTool.toolName);
-			// toolGroup.addTool(cornerstoneTools.SegmentationDisplayTool.toolName);
-			// toolGroup.setToolEnabled(cornerstoneTools.SegmentationDisplayTool.toolName);
-			// toolGroup.addTool(cornerstoneTools.BrushTool.toolName);
-			// toolGroup.addTool(cornerstoneTools.NormalBrushTool.toolName);
-			// toolGroup.addTool(cornerstoneTools.SmartBrushTool.toolName);
-
-			// toolGroup._toolInstances.StackScrollMouseWheel.constructor.prototype.mouseWheelCallback = mouseWheelCallback;
+			toolGroup.addTool(cornerstoneTools.StackScrollTool.toolName);
+			toolGroup.setToolActive(cornerstoneTools.StackScrollTool.toolName);
+			toolGroup.addTool(cornerstoneTools.LengthTool.toolName);
+			toolGroup.addTool(cornerstoneTools.PanTool.toolName);
+			toolGroup.addTool(cornerstoneTools.ZoomTool.toolName);
+			toolGroup.addTool(cornerstoneTools.WindowLevelTool.toolName);
+			toolGroup.addTool(cornerstoneTools.BrushTool.toolName);
+			toolGroup.addTool(cornerstoneTools.PaintFillTool.toolName);
+			toolGroup.addTool(cornerstoneTools.CircleScissorsTool.toolName);
+			toolGroup.addTool(cornerstoneTools.RegionSegmentTool.toolName);
+			toolGroup.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName);
 
 
 
-			// const toolGroup2 = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP2');
+			const toolGroup2 = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP2');
 
-			// toolGroup2.addTool(cornerstoneTools.TrackballRotateTool.toolName);
+			toolGroup2.addTool(cornerstoneTools.TrackballRotateTool.toolName);
 
-			// toolGroup2.setToolEnabled(cornerstoneTools.TrackballRotateTool.toolName);
+			toolGroup2.setToolEnabled(cornerstoneTools.TrackballRotateTool.toolName);
 
 			// document.body
 			// 	.querySelectorAll('.viewport_grid-canvas_panel-item')
@@ -178,22 +166,12 @@ window.addEventListener
 
 
 			new cornerstone.RenderingEngine('CORNERSTONE_RENDERING_ENGINE');
-			LOG('cornerstoneTools.segmentation.triggerSegmentationEvents', cornerstoneTools.segmentation.triggerSegmentationEvents)
 
-
-
-			// LOG(cornerstoneTools.segmentation.state)
-			// for (let i = 0; i < cornerstoneTools.segmentation.state.getColorLUT(0).length; ++i)
-			// {
-			// 	const color = cornerstoneTools.segmentation.config.color.getColorForSegmentIndex(this.toolGroup.id, this.segmentation_representation_ids[0], i);
-
-			// 	cornerstoneTools.segmentation.config.color.setColorForSegmentIndex(this.toolGroup.id, this.segmentation_representation_ids[0], i, [ ...color.slice(0, 3), 50 ]);
-			// }
+			cornerstoneTools.segmentation.state.addColorLUT(color_LUT, 0);
 		}
 
 
 
-		// Load react app.
 		import('./index.jsx');
 	},
 );

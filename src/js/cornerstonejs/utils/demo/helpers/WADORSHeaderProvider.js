@@ -10,7 +10,7 @@ function addInstance(imageId, dicomJSONDatasetOrP10ArrayBuffer) {
 
   // If Arraybuffer, parse to DICOMJSON before naturalizing.
   if (dicomJSONDatasetOrP10ArrayBuffer instanceof ArrayBuffer) {
-    const dicomData = DicomMessage.readFile(dicomJSONDatasetOrP10ArrayBuffer);
+    const dicomData = DicomMessage.readFile(dicomJSONDatasetOrP10ArrayBuffer, { ignoreErrors: true });
 
     dicomJSONDataset = dicomData.dict;
   } else {
@@ -23,6 +23,7 @@ function addInstance(imageId, dicomJSONDatasetOrP10ArrayBuffer) {
   if (dicomJSONDataset['SeriesInstanceUID'] === undefined) {
     naturalizedDataset =
       DicomMetaDictionary.naturalizeDataset(dicomJSONDataset);
+
   } else {
     naturalizedDataset = dicomJSONDataset;
   }
