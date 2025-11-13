@@ -573,7 +573,7 @@ export default class Serie extends SerieBase
 				// this.addSegmentation();
 				// this.activateSegmentation(0);
 
-				this.workers = await this.initCommonWorkers(32);
+				// this.workers = await this.initCommonWorkers(32);
 			}
 			else
 			{
