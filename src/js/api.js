@@ -10,35 +10,53 @@ const headers_pacs =
 		'Authorization': `Basic ${btoa(`${ config_api.PACS.login }:${ config_api.PACS.password }`)}`,
 	});
 
+const study_cache = {};
+
 export const getStudyAPI =
 	uuid =>
-		fetch
+		study_cache[uuid] ?
+
+			Promise.resolve(study_cache[uuid]) :
+
+			fetch
 		(
 			`${ PACS_BASE_URL }/studies/${ uuid }`,
 
 			{ headers: headers_pacs },
 		)
-			.then(resp => resp.json());
+			.then(resp => resp.json()).then(data => { study_cache[uuid] = data; return data; });
 
-export const getSerieAPI =
+const series_cache = {};
+
+export const getSeriesAPI =
 	uuid =>
-		fetch
+		series_cache[uuid] ?
+
+			Promise.resolve(series_cache[uuid]) :
+
+			fetch
 		(
 			`${ PACS_BASE_URL }/series/${ uuid }`,
 
 			{ headers: headers_pacs },
 		)
-			.then(resp => resp.json());
+			.then(resp => resp.json()).then(data => { series_cache[uuid] = data; return data; });
 
-export const getFileAPI =
+const instance_cache = {};
+
+export const getInstanceAPI =
 	uuid =>
-		fetch
-		(
-			`${ PACS_BASE_URL }/instances/${ uuid }/file`,
+		instance_cache[uuid] ?
 
-			{ headers: headers_pacs },
-		)
-			.then(resp => resp.arrayBuffer());
+			Promise.resolve(instance_cache[uuid]) :
+
+			fetch
+			(
+				`${ PACS_BASE_URL }/instances/${ uuid }/file`,
+
+				{ headers: headers_pacs },
+			)
+				.then(resp => resp.arrayBuffer()).then(data => { instance_cache[uuid] = data; return data; });
 
 
 

@@ -27,6 +27,7 @@ import color_LUT from './color-LUT';
  * - runtime: "web", build: "__WEB__", accessed as window.__WEB__
  * - runtime: "api-pacs", build: __API_PACS__
  * - runtime: "api-markup", build: __API_MARKUP__
+ * - runtime: "lang"
  * - runtime: "study"
  * - runtime: "markup-src"
  * - runtime: "markup-dst"
@@ -103,6 +104,11 @@ if (window.__CONFIG__ === 'web' || window.__CONFIG__ === 'web2')
 	}
 }
 
+if (!window.__LANG__)
+{
+	window.__LANG__ = 'ru';
+}
+
 
 
 // cornerstone.Viewport.prototype.render = function ()
@@ -132,36 +138,12 @@ window.addEventListener
 			cornerstoneTools.addTool(cornerstoneTools.BrushTool);
 			cornerstoneTools.addTool(cornerstoneTools.PaintFillTool);
 			cornerstoneTools.addTool(cornerstoneTools.CircleScissorsTool);
+			cornerstoneTools.addTool(cornerstoneTools.SphereScissorsTool);
 			cornerstoneTools.addTool(cornerstoneTools.RegionSegmentTool);
 			cornerstoneTools.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool);
-
-			const toolGroup = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP');
-
-			toolGroup.addTool(cornerstoneTools.StackScrollTool.toolName);
-			toolGroup.setToolActive(cornerstoneTools.StackScrollTool.toolName);
-			toolGroup.addTool(cornerstoneTools.LengthTool.toolName);
-			toolGroup.addTool(cornerstoneTools.PanTool.toolName);
-			toolGroup.addTool(cornerstoneTools.ZoomTool.toolName);
-			toolGroup.addTool(cornerstoneTools.WindowLevelTool.toolName);
-			toolGroup.addTool(cornerstoneTools.BrushTool.toolName);
-			toolGroup.addTool(cornerstoneTools.PaintFillTool.toolName);
-			toolGroup.addTool(cornerstoneTools.CircleScissorsTool.toolName);
-			toolGroup.addTool(cornerstoneTools.RegionSegmentTool.toolName);
-			toolGroup.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName);
-
-
-
-			const toolGroup2 = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP2');
-
-			toolGroup2.addTool(cornerstoneTools.TrackballRotateTool.toolName);
-
-			toolGroup2.setToolEnabled(cornerstoneTools.TrackballRotateTool.toolName);
-
-			// document.body
-			// 	.querySelectorAll('.viewport_grid-canvas_panel-item')
-			// 	.forEach(sel => (sel.style.cursor = 'default'));
-
-			// toolGroup2.setToolActive(cornerstoneTools.TrackballRotateTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] });
+			cornerstoneTools.addTool(cornerstoneTools.LivewireContourSegmentationTool);
+			cornerstoneTools.addTool(cornerstoneTools.SplineContourSegmentationTool);
+			cornerstoneTools.addTool(cornerstoneTools.WholeBodySegmentTool);
 
 
 

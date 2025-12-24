@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radiomics Feature Extraction</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 2px dashed #ddd;
+            border-radius: 4px;
+            background-color: #fafafa;
+            cursor: pointer;
+        }
+        input[type="file"]:hover {
+            border-color: #4CAF50;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        .progress {
+            margin-top: 20px;
+            display: none;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background-color: #f0f0f0;
+            border-radius: 15px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            display: none;
+        }
+        .result.success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .result.error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .result pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .info {
+            background-color: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧬 Radiomics Feature Extraction</h1>
+
+        <div class="info">
+            <strong>Инструкция:</strong> Выберите файл изображения (.nii) и файл маски (.nii),
+            затем нажмите "Извлечь признаки" для отправки на сервер.
+        </div>
+
+        <form id="radiomicsForm">
+            <div class="form-group">
+                <label for="imageFile">Изображение (Image) - .nii файл:</label>
+                <input type="file" id="imageFile" accept=".nii" required>
+            </div>
+
+            <div class="form-group">
+                <label for="maskFile">Маска (Mask) - .nii файл:</label>
+                <input type="file" id="maskFile" accept=".nii" required>
+            </div>
+
+            <div class="form-group">
+                <label for="serverUrl">URL сервера:</label>
+                <input type="text" id="serverUrl" value="http://localhost:8080/radiomics"
+                       style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+            </div>
+
+            <button type="submit" id="submitBtn">Извлечь признаки</button>
+        </form>
+
+        <div class="progress" id="progress">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill">0%</div>
+            </div>
+            <p id="progressText" style="text-align: center; margin-top: 10px;"></p>
+        </div>
+
+        <div class="result" id="result"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('radiomicsForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const progress = document.getElementById('progress');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const result = document.getElementById('result');
+
+        // Функция для обновления прогресса
+        function updateProgress(percent, text) {
+            progress.style.display = 'block';
+            progressFill.style.width = percent + '%';
+            progressFill.textContent = percent + '%';
+            progressText.textContent = text;
+        }
+
+        // Функция для отображения результата
+        function showResult(success, data) {
+            progress.style.display = 'none';
+            result.style.display = 'block';
+            result.className = 'result ' + (success ? 'success' : 'error');
+
+            if (success) {
+                result.innerHTML = `
+                    <h3>✅ Успешно!</h3>
+                    <p><strong>Session ID:</strong> ${data.session_id}</p>
+                    <p><strong>Количество признаков:</strong> ${data.features_count}</p>
+                    <details>
+                        <summary style="cursor: pointer; margin-top: 10px;"><strong>Показать признаки</strong></summary>
+                        <pre>${JSON.stringify(data.features, null, 2)}</pre>
+                    </details>
+                    <details>
+                        <summary style="cursor: pointer; margin-top: 10px;"><strong>Скачать CSV</strong></summary>
+                        <pre style="max-height: 200px;">${data.csv_data}</pre>
+                    </details>
+                `;
+            } else {
+                result.innerHTML = `
+                    <h3>❌ Ошибка</h3>
+                    <p>${data.message || 'Произошла неизвестная ошибка'}</p>
+                `;
+            }
+        }
+
+        // Обработчик отправки формы
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const imageFile = document.getElementById('imageFile').files[0];
+            const maskFile = document.getElementById('maskFile').files[0];
+            const serverUrl = document.getElementById('serverUrl').value;
+
+            if (!imageFile || !maskFile) {
+                alert('Пожалуйста, выберите оба файла');
+                return;
+            }
+
+            // Отключаем кнопку и показываем прогресс
+            submitBtn.disabled = true;
+            updateProgress(10, 'Чтение файлов...');
+
+            try {
+                // Подготавливаем FormData с бинарными файлами
+                updateProgress(30, 'Подготовка файлов...');
+                console.log('Preparing files:', imageFile.name, imageFile.size, 'bytes', maskFile.name, maskFile.size, 'bytes');
+
+                const formData = new FormData();
+                formData.append('image', imageFile, imageFile.name);
+                formData.append('mask', maskFile, maskFile.name);
+                formData.append('session_id', new Date().toISOString().replace(/[:.]/g, '-'));
+
+                // Отправляем запрос с бинарными данными
+                updateProgress(70, 'Отправка на сервер...');
+                const response = await fetch(serverUrl, {
+                    method: 'POST',
+                    body: formData
+                    // Не указываем Content-Type - браузер установит его автоматически с boundary для multipart/form-data
+                });
+
+                updateProgress(90, 'Обработка ответа...');
+
+                const resultData = await response.json();
+
+                if (response.ok && resultData.status === 'success') {
+                    updateProgress(100, 'Готово!');
+                    showResult(true, resultData);
+                } else {
+                    showResult(false, resultData);
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                showResult(false, {
+                    message: `Ошибка соединения: ${error.message}. Убедитесь, что сервер запущен на ${serverUrl}`
+                });
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
+

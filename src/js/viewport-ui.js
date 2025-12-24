@@ -12,6 +12,8 @@ import * as cornerstoneTools from '@cornerstonejs/tools';
 
 import JSZip from 'jszip';
 
+import locale from '../locale.json';
+
 
 
 // container,
@@ -155,7 +157,14 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
       );
 
 		viewport_input.element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, (evt) => {
+		// LOG(viewport_input.viewportId, _this.renderingEngine._viewports, _this.renderingEngine.getViewport)
+		// LOG(_this.renderingEngine._viewports.get(viewport_input.viewportId))
 			const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+
+			if (!viewport)
+			{
+				return;
+			}
 
 			const camera = evt.detail.camera;
 			const { focalPoint, viewPlaneNormal } = camera;
@@ -319,6 +328,129 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
     //   download_section.appendChild(download_button);
     // }
 
+		window.__test__ = async () =>
+		{
+			const image = await _this.convertVolumeToNifti({ filename: `${ _this.imageIds.series_id }.nii`, segmentation: false, download: false });
+			const mask = await _this.convertVolumeToNifti({ filename: `${ _this.imageIds.series_id }.segmentation.nii`, segmentation: true, download: false });
+
+			if (!window.__phase1__)
+			{
+				window.__phase1__ = { image, mask };
+
+				await window.__goBackToSeriesList();
+
+				return;
+			}
+
+		const formData = new FormData();
+		formData.append('image1', new Blob([ window.__phase1__.image ], { type: 'application/octet-stream' }), `${ _this.imageIds.series_id }.nii`);
+		formData.append('mask1', new Blob([ window.__phase1__.mask ], { type: 'application/octet-stream' }), `${ _this.imageIds.series_id }.segmentation.nii`);
+		formData.append('image2', new Blob([ image ], { type: 'application/octet-stream' }), `${ _this.imageIds.series_id }.nii`);
+		formData.append('mask2', new Blob([ mask ], { type: 'application/octet-stream' }), `${ _this.imageIds.series_id }.segmentation.nii`);
+		// formData.append('session_id', new Date().toISOString().replace(/[:.]/g, '-'));
+
+		// Create overlay loader
+		const loaderOverlay = document.createElement('div');
+		loaderOverlay.className = '__radiomics_loader__';
+		loaderOverlay.style.position = 'fixed';
+		loaderOverlay.style.top = '0';
+		loaderOverlay.style.left = '0';
+		loaderOverlay.style.width = '100%';
+		loaderOverlay.style.height = '100%';
+		loaderOverlay.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+		loaderOverlay.style.display = 'flex';
+		loaderOverlay.style.alignItems = 'center';
+		loaderOverlay.style.justifyContent = 'center';
+		loaderOverlay.style.zIndex = '999999';
+		loaderOverlay.style.flexDirection = 'column';
+		loaderOverlay.style.gap = '20px';
+
+		const loaderSpinner = document.createElement('div');
+		loaderSpinner.className = 'viewport_grid-loader';
+
+		const loaderText = document.createElement('div');
+		loaderText.style.color = '#ffffff';
+		loaderText.style.fontSize = '18px';
+		loaderText.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+		loaderText.textContent = 'Обработка...';
+
+		loaderOverlay.appendChild(loaderSpinner);
+		loaderOverlay.appendChild(loaderText);
+		document.body.appendChild(loaderOverlay);
+
+		let resultData;
+		try
+		{
+			// const response = await fetch('http://localhost:54006/radiomics', { method: 'POST', body: formData });
+			// const response = await fetch('https://188.242.168.103:54003/radiomics', { method: 'POST', body: formData });
+			const response = await fetch('https://tasty.ris.fishbirds.ru/radiomics', { method: 'POST', body: formData });
+
+			resultData = await response.json();
+		}
+		finally
+		{
+			// Remove loader overlay
+			if (document.body.contains(loaderOverlay))
+			{
+				document.body.removeChild(loaderOverlay);
+			}
+		}
+
+			console.log(resultData);
+
+			let text = 'Ошибка';
+
+			if (resultData.status === 'success')
+			{
+				text = resultData.result;
+			}
+
+			const container = document.createElement('div');
+
+			container.className = '__test__';
+
+			container.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+			container.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+			container.style.position = 'fixed';
+			container.style.top = '0';
+			container.style.left = '0';
+			container.style.width = '100%';
+			container.style.height = '100%';
+			container.style.display = 'flex';
+			container.style.alignItems = 'center';
+			container.style.justifyContent = 'center';
+			container.style.zIndex = '999999';
+
+			const result = document.createElement('div');
+
+			result.style.background = '#ffffff';
+			result.style.padding = '40px';
+			result.style.borderRadius = '12px';
+			result.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1)';
+			result.style.backgroundColor = '#ffffff';
+			result.style.border = '1px solid #e0e0e0';
+			result.style.color = '#212121';
+			result.style.maxWidth = '500px';
+			result.style.width = '90%';
+			result.style.position = 'relative';
+			result.style.fontSize = '16px';
+			result.style.lineHeight = '1.6';
+
+			result.innerHTML = `
+				<div style="position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 6px; background-color: #f5f5f5; color: #666; font-size: 20px; line-height: 1; transition: background-color 0.2s;"
+					onMouseOver="this.style.backgroundColor='#e0e0e0'; this.style.color='#333';"
+					onMouseOut="this.style.backgroundColor='#f5f5f5'; this.style.color='#666';"
+					onClick="document.body.removeChild(document.getElementsByClassName('__test__')[0]); window.location.reload();">×</div>
+				<div style="padding-right: 20px;">
+					<p style="margin: 0; font-size: 18px; font-weight: 500; color: #212121; letter-spacing: -0.01em;">${text}</p>
+				</div>
+			`;
+
+			container.appendChild(result);
+			document.body.appendChild(container);
+		};
+
+		if (false)
 		{
 			const download_section2 = document.createElement('div');
 
@@ -331,9 +463,9 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
 			select.style.display = 'inline-block';
 			select.style.height = '100%';
 			const options = [
-				{ value: '1', text: 'Data as DICOM' },
-				{ value: '2', text: 'Data as NIfTI' },
-				{ value: '3', text: 'Segmentation as NIfTI' },
+				{ value: '1', text: locale['Data as DICOM'][window.__LANG__] },
+				{ value: '2', text: locale['Data as NIfTI'][window.__LANG__] },
+				{ value: '3', text: locale['Segmentation as NIfTI'][window.__LANG__] },
 			];
 
 			options.forEach(data => {
@@ -353,7 +485,7 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
 			button.style.marginLeft = '2px';
 			button.style.marginRight = '2px';
 			button.className = 'input-element -button';
-			button.innerHTML = 'Download';
+			button.innerHTML = locale['Download'][window.__LANG__];
 			button.addEventListener
 			(
 				'click',
@@ -394,6 +526,27 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
 			download_section2.appendChild(button);
 
 			viewport_input.element.appendChild(download_section2);
+		}
+
+		{
+			const save_markup_button = document.createElement('button');
+
+			if (!window.__phase1__)
+			{
+				save_markup_button.innerHTML = locale['Save2'][window.__LANG__];
+			}
+			else
+			{
+				save_markup_button.innerHTML = locale['Process'][window.__LANG__];
+			}
+
+			save_markup_button.addEventListener('click', window.__test__);
+
+			save_markup_button.style.position = 'absolute';
+			save_markup_button.style.right = '20px';
+			save_markup_button.style.bottom = '10px';
+
+			viewport_input.element.appendChild(save_markup_button);
 		}
   }
 };
@@ -440,31 +593,31 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
 
     const update_mesh = document.createElement('div');
     update_mesh.className = 'input-element -button';
-    update_mesh.innerHTML = 'Update';
+    update_mesh.innerHTML = locale['Update'][window.__LANG__];
     update_mesh.addEventListener('click', () => _this.doMarchingCubes());
     actions.appendChild(update_mesh);
 
     const center_three_scene = document.createElement('div');
     center_three_scene.className = 'input-element -button';
-    center_three_scene.innerHTML = 'Center';
+    center_three_scene.innerHTML = locale['Center'][window.__LANG__];
     center_three_scene.addEventListener('click', () => _this.centerThreeScene());
     actions.appendChild(center_three_scene);
 
     const save_3d_scene = document.createElement('div');
     save_3d_scene.className = 'input-element -button';
-    save_3d_scene.innerHTML = 'Save';
+    save_3d_scene.innerHTML = locale['Save'][window.__LANG__];
     save_3d_scene.addEventListener('click', () => _this.saveScene());
     actions.appendChild(save_3d_scene);
 
     const download_stl_binary = document.createElement('div');
     download_stl_binary.className = 'input-element -button';
-    download_stl_binary.innerHTML = '&#8595; STL (binary)';
+    download_stl_binary.innerHTML = `&#8595; ${locale['STL (binary)'][window.__LANG__]}`;
     download_stl_binary.addEventListener('click', () => _this.downloadStlBinary());
     actions.appendChild(download_stl_binary);
 
     const download_stl_ascii = document.createElement('div');
     download_stl_ascii.className = 'input-element -button';
-    download_stl_ascii.innerHTML = '&#8595; STL (ASCII)';
+    download_stl_ascii.innerHTML = `&#8595; ${locale['STL (ASCII)'][window.__LANG__]}`;
     download_stl_ascii.addEventListener('click', () => _this.downloadStlAscii());
     actions.appendChild(download_stl_ascii);
 
@@ -487,7 +640,7 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
       max: 100,
       step: 1,
       value: _this.smoothing,
-      name: 'Smoothing',
+      name: locale['Smoothing'][window.__LANG__],
       callback: evt =>
       {
         _this.smoothing = parseFloat(evt.target.value);
@@ -501,7 +654,7 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
       max: 1,
       step: 0.01,
       value: 0,
-      name: 'Filtering',
+      name: locale['Filtering'][window.__LANG__],
       callback: evt =>
       {
         _this.setFiltering?.(evt.target.value);
@@ -512,14 +665,14 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
     ({
       container: settings,
       value: 0,
-      name: 'Volume',
+      name: locale['Volume'][window.__LANG__],
     });
 
     createText
     ({
       container: settings,
       value: 0,
-      name: 'Area',
+      name: locale['Area'][window.__LANG__],
     });
 
     // {
@@ -806,7 +959,7 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
         max: 1,
         step: 0.01,
         value: 0,
-        name: 'Opacity',
+        name: locale['Opacity'][window.__LANG__],
         callback: (evt, { range, label }) =>
         {
           const ofun = actor.getProperty().getScalarOpacity(0);
@@ -842,7 +995,7 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
       const a = document.createElement('a');
 
       a.className = 'input-element -button';
-      a.innerHTML = 'Segment with opacity';
+      a.innerHTML = locale['Segment with opacity'][window.__LANG__];
       a.addEventListener('click', () => window.__segm());
 
       // a.style.color = 'white';
@@ -949,7 +1102,7 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
       max: 1,
       step: 0.01,
       value: 1,
-      name: 'WW',
+      name: locale['WW'][window.__LANG__],
       callback: (evt, { range, label }) =>
       {
         ww = (data_range[1] - data_range[0]) * parseFloat(evt.target.value);
@@ -1019,7 +1172,7 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
       max: 1,
       step: 0.01,
       value: 0.5,
-      name: 'WL',
+      name: locale['WL'][window.__LANG__],
       callback: (evt, { range, label }) =>
       {
         wl = (data_range[1] - data_range[0]) * parseFloat(evt.target.value);

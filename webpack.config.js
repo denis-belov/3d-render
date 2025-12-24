@@ -24,6 +24,13 @@ module.exports = (env, argv) =>
 	const PROD = env.production || argv.mode === 'production';
 
 	return {
+		experiments:
+		{
+			asyncWebAssembly: true,
+			// syncWebAssembly: true,
+			// topLevelAwait: true,
+		},
+
 		entry: './src/index.js',
 
 		target: 'web',
@@ -146,7 +153,13 @@ module.exports = (env, argv) =>
 					{
 						filename: 'images/[name].[hash][ext]',
 					},
-				}
+				},
+
+				// for wasm files in node_modules
+				{
+					test: /\.wasm$/,
+					type: 'asset/resource',
+				},
 
 				// ...vtk_rules,
 			],
@@ -233,6 +246,14 @@ module.exports = (env, argv) =>
 			historyApiFallback: true,
 			host: 'localhost',
 			port: 3000,
+
+			client:
+			{
+				overlay:
+				{
+					runtimeErrors: false,
+				},
+			},
 
 			headers:
 			{

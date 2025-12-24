@@ -1,0 +1,327 @@
+{
+	"Protocol name":
+	{
+		"en": "Protocol name",
+		"ru": "Название протокола"
+	},
+	"Click to load files":
+	{
+		"en": "Click to load files",
+		"ru": "Нажмите для загрузки файлов"
+	},
+	"Click to load directories":
+	{
+		"en": "Click to load directories",
+		"ru": "Нажмите для загрузки директорий"
+	},
+	"Modality":
+	{
+		"en": "Modality",
+		"ru": "Модальность"
+	},
+	"Series description":
+	{
+		"en": "Series description",
+		"ru": "Описание серии"
+	},
+	"Instance number":
+	{
+		"en": "Instance number",
+		"ru": "Количество срезов"
+	},
+	"Description":
+	{
+		"en": "Description",
+		"ru": "Описание"
+	},
+	"Volume":
+	{
+		"en": "Volume",
+		"ru": "Объем"
+	},
+	"3D":
+	{
+		"en": "3D",
+		"ru": "3D"
+	},
+	"Back to series list":
+	{
+		"en": "Back to series list",
+		"ru": "Вернуться к списку серий"
+	},
+	"Data as DICOM":
+	{
+		"en": "Data as DICOM",
+		"ru": "Данные в формате DICOM"
+	},
+	"Data as NIfTI":
+	{
+		"en": "Data as NIfTI",
+		"ru": "Данные в формате NIfTI"
+	},
+	"Segmentation as NIfTI":
+	{
+		"en": "Segmentation as NIfTI",
+		"ru": "Сегментация в формате NIfTI"
+	},
+	"Download":
+	{
+		"en": "Download",
+		"ru": "Скачать"
+	},
+	"Process":
+	{
+		"en": "Process",
+		"ru": "Сохранить разметку и отправить в ИИ сервис"
+	},
+	"Update":
+	{
+		"en": "Update",
+		"ru": "Обновить"
+	},
+	"Center":
+	{
+		"en": "Center",
+		"ru": "Центрировать"
+	},
+	"Save":
+	{
+		"en": "Save",
+		"ru": "Сохранить разметку"
+	},
+	"Save2":
+	{
+		"en": "Save2",
+		"ru": "Сохранить разметку и вернуться к списку серий"
+	},
+	"STL (binary)":
+	{
+		"en": "STL (binary)",
+		"ru": "STL (бинарный)"
+	},
+	"STL (ASCII)":
+	{
+		"en": "STL (ASCII)",
+		"ru": "STL (ASCII)"
+	},
+	"Smoothing":
+	{
+		"en": "Smoothing",
+		"ru": "Сглаживание"
+	},
+	"Filtering":
+	{
+		"en": "Filtering",
+		"ru": "Фильтрация"
+	},
+	"Area":
+	{
+		"en": "Area",
+		"ru": "Площадь"
+	},
+	"Opacity":
+	{
+		"en": "Opacity",
+		"ru": "Непрозрачность"
+	},
+	"Segment with opacity":
+	{
+		"en": "Segment with opacity",
+		"ru": "Сегментировать с непрозрачностью"
+	},
+	"WW":
+	{
+		"en": "WW",
+		"ru": "WW"
+	},
+	"WL":
+	{
+		"en": "WL",
+		"ru": "WL"
+	},
+	"Segmentations":
+	{
+		"en": "Segmentations",
+		"ru": "Сегментации"
+	},
+	"+ Add Segmentation":
+	{
+		"en": "+ Add Segmentation",
+		"ru": "+ Добавить сегментацию"
+	},
+	"Segmentation":
+	{
+		"en": "Segmentation",
+		"ru": "Сегментация"
+	},
+	"Success":
+	{
+		"en": "Success",
+		"ru": "Успешно"
+	},
+	"Session ID":
+	{
+		"en": "Session ID",
+		"ru": "ID сессии"
+	},
+	"Features count":
+	{
+		"en": "Features count",
+		"ru": "Количество признаков"
+	},
+	"Show features":
+	{
+		"en": "Show features",
+		"ru": "Показать признаки"
+	},
+	"Download CSV":
+	{
+		"en": "Download CSV",
+		"ru": "Скачать CSV"
+	},
+	"Close":
+	{
+		"en": "Close",
+		"ru": "Закрыть"
+	},
+	"Segmentation Tools":
+	{
+		"en": "Segmentation Tools",
+		"ru": "Инструменты сегментации"
+	},
+	"Spherical Brush":
+	{
+		"en": "Spherical Brush",
+		"ru": "Сферическая кисть"
+	},
+	"Circular Brush":
+	{
+		"en": "Circular Brush",
+		"ru": "Круглая кисть"
+	},
+	"Spherical Brush Threshold":
+	{
+		"en": "Spherical Brush Threshold",
+		"ru": "Сферическая кисть с порогом"
+	},
+	"Circular Brush Threshold":
+	{
+		"en": "Circular Brush Threshold",
+		"ru": "Круглая кисть с порогом"
+	},
+	"Spherical Brush Threshold Island":
+	{
+		"en": "Spherical Brush Threshold Island",
+		"ru": "Сферическая кисть с порогом и острой границей"
+	},
+	"Paint Fill":
+	{
+		"en": "Paint Fill",
+		"ru": "Закрасить"
+	},
+	"Circle Scissors":
+	{
+		"en": "Circle Scissors",
+		"ru": "Круглые ножницы"
+	},
+	"Sphere Scissors":
+	{
+		"en": "Sphere Scissors",
+		"ru": "Сферические ножницы"
+	},
+	"Region Segment":
+	{
+		"en": "Region Segment",
+		"ru": "Региональная сегментация"
+	},
+	"Whole Body Segment":
+	{
+		"en": "Whole Body Segment",
+		"ru": "Полная тело сегментация"
+	},
+	"Planar Freehand Contour Segmentation":
+	{
+		"en": "Planar Freehand Contour Segmentation",
+		"ru": "Плоская свободная контурная сегментация"
+	},
+	"Planar Freehand Contour Segmentation Interpolation":
+	{
+		"en": "Planar Freehand Contour Segmentation Interpolation",
+		"ru": "Плоская свободная контурная сегментация с интерполяцией"
+	},
+	"Livewire Contour Segmentation":
+	{
+		"en": "Livewire Contour Segmentation",
+		"ru": "Живая контурная сегментация"
+	},
+	"Livewire Contour Segmentation Interpolation":
+	{
+		"en": "Livewire Contour Segmentation Interpolation",
+		"ru": "Живая контурная сегментация с интерполяцией"
+	},
+	"Catmull-Rom Spline ROI":
+	{
+		"en": "Catmull-Rom Spline ROI",
+		"ru": "Катмул-Ром Сплайн ROI"
+	},
+	"CatmullRomSplineROI Interpolation":
+	{
+		"en": "CatmullRomSplineROI Interpolation",
+		"ru": "Катмул-Ром Сплайн ROI с интерполяцией"
+	},
+	"Linear Spline ROI":
+	{
+		"en": "Linear Spline ROI",
+		"ru": "Линейный Сплайн ROI"
+	},
+	"LinearSplineROI Interpolation":
+	{
+		"en": "LinearSplineROI Interpolation",
+		"ru": "Линейный Сплайн ROI с интерполяцией"
+	},
+	"B-Spline ROI":
+	{
+		"en": "B-Spline ROI",
+		"ru": "B-Сплайн ROI"
+	},
+	"BSplineROI Interpolation":
+	{
+		"en": "BSplineROI Interpolation",
+		"ru": "B-Сплайн ROI с интерполяцией"
+	},
+	"Window/Level":
+	{
+		"en": "Window/Level",
+		"ru": "Окно/Уровень"
+	},
+	"Length":
+	{
+		"en": "Length",
+		"ru": "Длина"
+	},
+	"Pan":
+	{
+		"en": "Pan",
+		"ru": "Перемещение"
+	},
+	"Zoom":
+	{
+		"en": "Zoom",
+		"ru": "Масштаб"
+	},
+	"Interpolation":
+	{
+		"en": "Interpolation",
+		"ru": "Интерполяция"
+	},
+	"Labelmap":
+	{
+		"en": "Labelmap",
+		"ru": "Карта меток"
+	},
+	"Contour":
+	{
+		"en": "Contour",
+		"ru": "Контур"
+	}
+}

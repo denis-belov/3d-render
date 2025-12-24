@@ -1,12 +1,15 @@
 import initProviders from './initProviders';
 import initDicomImageLoader from './initDicomImageLoader';
-import { init as csRenderInit } from '@cornerstonejs/core';
-import { init as csToolsInit } from '@cornerstonejs/tools';
+import * as cornerstone from '@cornerstonejs/core';
+import * as cornerstoneTools from '@cornerstonejs/tools';
+import * as polySeg from '@cornerstonejs/polymorphic-segmentation';
+
+LOG(polySeg)
 
 export default async function initCornerstone ()
 {
   initProviders();
 	initDicomImageLoader();
-  await csRenderInit();
-  await csToolsInit();
+  await cornerstone.init();
+  await cornerstoneTools.init({ addons: { polySeg } });
 }

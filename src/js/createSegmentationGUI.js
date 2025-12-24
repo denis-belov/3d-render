@@ -1,5 +1,7 @@
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
+import locale from '../locale.json';
+
 
 
 export function createSegmentationGUI (_this)
@@ -37,7 +39,7 @@ export function createSegmentationGUI (_this)
 		justify-content: space-between;
 		gap: 8px;
 	`;
-	dropdownButton.innerHTML = '<span class="dropdown-label">Segmentations</span><span class="dropdown-arrow">▼</span>';
+	dropdownButton.innerHTML = `<span class="dropdown-label">${locale['Segmentations'][window.__LANG__]}</span><span class="dropdown-arrow">▼</span>`;
 
 	// Dropdown menu (hidden by default)
 	const dropdownMenu = document.createElement('div');
@@ -68,7 +70,7 @@ export function createSegmentationGUI (_this)
 		border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 		transition: background 0.2s;
 	`;
-	addButton.innerHTML = '+ Add Segmentation';
+	addButton.innerHTML = locale['+ Add Segmentation'][window.__LANG__];
 	addButton.addEventListener('mouseenter', () => addButton.style.background = 'rgba(74, 144, 226, 0.1)');
 	addButton.addEventListener('mouseleave', () => addButton.style.background = 'transparent');
 	addButton.addEventListener('click', (evt) =>
@@ -290,7 +292,7 @@ export function addSegmentationGUI (_this, segm, segm_index, segm_name)
 			const labelElement = _this.segmentation_dropdown_button?.querySelector('.dropdown-label');
 			if (labelElement)
 			{
-				labelElement.textContent = segm.name || `Segmentation ${segm_index}`;
+				labelElement.textContent = segm.name || `${locale['Segmentation'][window.__LANG__]} ${segm_index}`;
 			}
 		}
 		name_overlay.style.display = 'block';
@@ -407,7 +409,7 @@ export function activateSegmentationGUI (_this, segm, segm_index)
 			const labelElement = _this.segmentation_dropdown_button?.querySelector('.dropdown-label');
 			if (labelElement)
 			{
-				labelElement.textContent = segm.name || `Segmentation ${segm_index}`;
+				labelElement.textContent = segm.name || `${locale['Segmentation'][window.__LANG__]} ${segm_index}`;
 			}
 		}
 	}

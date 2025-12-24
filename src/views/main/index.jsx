@@ -1,21 +1,25 @@
 import React from 'react';
 
 import * as cornerstone from '@cornerstonejs/core';
+import * as cornerstoneTools from '@cornerstonejs/tools';
 import dicomImageLoader from '@cornerstonejs/dicom-image-loader';
 
 import WADORSHeaderProvider from '../../js/cornerstonejs/utils/demo/helpers/WADORSHeaderProvider';
 
-import { getStudyAPI, getSerieAPI, getFileAPI } from '../../js/api';
+import { getStudyAPI, getSeriesAPI, getInstanceAPI } from '../../js/api';
 
 import Serie from '../../js/serie';
 
 import icon_reload from './Ic_refresh_48px.svg';
 
 import _config from '../../config.json';
+import locale from '../../locale.json';
 
 
 
 const DEFAULT_ORIENTATIONS = [ 'AXIAL', 'SAGITTAL', 'CORONAL' ];
+
+window.ITERATION = 0;
 
 
 
@@ -30,12 +34,11 @@ window.__CONFIG__ = CONFIG;
 
 
 
-
 const getImageSrcFromImageId = async imageId =>
 {
 	const canvas = document.createElement('canvas');
 
-	await cornerstone.utilities.loadImageToCanvas({ canvas, imageId });
+	await cornerstone.utilities.loadImageToCanvas({ canvas, imageId, thumbnail: true });
 
 	return canvas.toDataURL();
 };
@@ -139,7 +142,7 @@ export async function getWebSeries (study_uuid)
 			(
 				series_uuid =>
 				{
-					const pr = getSerieAPI(series_uuid)
+					const pr = getSeriesAPI(series_uuid)
 						.then
 						(
 							serie =>
@@ -187,6 +190,8 @@ export async function getWebSeries (study_uuid)
 		// image_series = _image_series;
 	}
 
+	LOG('image_series', image_series)
+
 	return image_series;
 }
 
@@ -203,6 +208,92 @@ export default class MainView extends React.PureComponent
 			item4_toggle: 1,
 			loading: false,
 			CONFIG,
+		};
+
+		window.__goBackToSeriesList = async evt =>
+		{
+			evt?.stopPropagation();
+
+			const pn = document.getElementsByClassName('topbar')[0];
+
+			Array.from(pn.children)
+				.forEach
+				(
+					elm =>
+					{
+						if (elm !== pn.getElementsByClassName('topbar-back')[0])
+						{
+							pn.removeChild(elm);
+						}
+					},
+				);
+
+			++window.ITERATION;
+
+			const state = {};
+
+			this.state.CONFIG.studies
+				.forEach((_, study_index) =>
+				{
+					state[`modal${ study_index }`] = true;
+					state[`imagesAreLoaded${ study_index }`] = false;
+					state[`loading${ study_index }`] = false;
+				})
+
+			this.setState
+			(
+				state,
+
+				async () =>
+				{
+					window.__series = [];
+
+					await cornerstone.cache.purgeCache();
+					await cornerstone.getRenderingEngine('CORNERSTONE_RENDERING_ENGINE').destroy();
+					await cornerstoneTools.segmentation.removeAllSegmentations();
+
+					await cornerstoneTools.ToolGroupManager.getAllToolGroups()
+						.forEach
+						(
+							tg =>
+							{
+								Object.keys(tg._toolInstances)
+									.forEach
+									(
+										toolName =>
+										{
+											tg.setToolDisabled(toolName);
+										},
+									);
+
+								cornerstoneTools.ToolGroupManager.destroyToolGroup(tg);
+							},
+						);
+
+					new cornerstone.RenderingEngine('CORNERSTONE_RENDERING_ENGINE');
+
+					Array.from(document.getElementsByClassName('viewport_grid-canvas_panel-item'))
+						.forEach
+						(
+							elm =>
+							{
+								Array.from(elm.children)
+									.forEach
+									(
+										elm_ =>
+										{
+											if (elm_.className !== 'viewport_grid-canvas_panel-placeholder')
+											{
+												elm.removeChild(elm_);
+											}
+										},
+									);
+							},
+						);
+
+					await this.componentDidMount();
+				},
+			);
 		};
 	}
 
@@ -221,39 +312,39 @@ export default class MainView extends React.PureComponent
 	{
 		const serie = new Serie();
 
-		if ((args[0].modality !== 'MR' && args[0].modality !== 'CT') || args[0].length === 1)
-		{
-			this.setState
-			(
-				{
-					CONFIG:
-					{
-						layout:
-						{
-							width: 1,
-							height: 1,
-						},
+		// if ((args[0].modality !== 'MR' && args[0].modality !== 'CT') || args[0].length === 1)
+		// {
+		// 	this.setState
+		// 	(
+		// 		{
+		// 			CONFIG:
+		// 			{
+		// 				layout:
+		// 				{
+		// 					width: 1,
+		// 					height: 1,
+		// 				},
 
-						studies:
-						[
-							{
-								viewports:
-								[
-									{
-										type: "ORTHOGRAPHIC",
-										orientation: "axial",
-										position: 0,
-									},
-								],
-							},
-						],
-					},
-				},
+		// 				studies:
+		// 				[
+		// 					{
+		// 						viewports:
+		// 						[
+		// 							{
+		// 								type: "ORTHOGRAPHIC",
+		// 								orientation: "axial",
+		// 								position: 0,
+		// 							},
+		// 						],
+		// 					},
+		// 				],
+		// 			},
+		// 		},
 
-				() => serie.init(...args, this),
-			);
-		}
-		else
+		// 		() => serie.init(...args, this),
+		// 	);
+		// }
+		// else
 		{
 			await serie.init(...args, this);
 		}
@@ -284,47 +375,76 @@ export default class MainView extends React.PureComponent
 					},
 				);
 
-		const image_series = window.__CONFIG__.features?.includes('web') ? (await getWebSeries(param1)) : (await convertFilesToSeries(param1));
+		let image_series = null;
 
-		if (window.__CONFIG__.features?.includes('web'))
+		if (!window.image_series)
 		{
-			for (const series of Object.values(image_series))
+			image_series = window.__CONFIG__.features?.includes('web') ? (await getWebSeries(param1)) : (await convertFilesToSeries(param1));
+
+			window.image_series = image_series;
+
+			if (window.__CONFIG__.features?.includes('web'))
 			{
-				const files = [];
+				for (const series of Object.values(image_series))
+				{
+					series.loadImages = async () =>
+					{
+						const files = [];
 
-				await Promise.all
-				(
-					series.Instances
-						.map
+						LOG(JSON.stringify(series.Instances))
+
+						await Promise.all
 						(
-							instance_uuid =>
-							{
-								const pr = getFileAPI(instance_uuid)
-									.then
-									(
-										data => files.push(new File([ data ], `${ instance_uuid }.dcm`, { type: 'application/dicom' })),
-									);
+							series.Instances
+								.map
+								(
+									instance_uuid =>
+									{
+										const pr = getInstanceAPI(instance_uuid)
+											.then
+											(
+												data => files.push(new File([ data ], `${ instance_uuid }.dcm`, { type: 'application/dicom' })),
+											);
 
-								return pr;
-							},
-						),
-				);
+										return pr;
+									},
+								),
+						);
 
-				const image_ids = new Array(files.length);
+						const image_ids = new Array(files.length);
 
-				await Promise.allSettled(convertFilesToImages(files, image_ids));
+						await Promise.allSettled(convertFilesToImages(files, image_ids));
 
-				series.files = files;
+						series.files = files;
 
-				series.push(...image_ids);
+						series.push(...image_ids);
+
+						series.images_loaded = true;
+					};
+				}
 			}
+		}
+		else
+		{
+			image_series = window.image_series;
 		}
 
 		for (let key in image_series)
 		{
-			const instance_index = Math.floor(image_series[key].length / 2);
+			const instance_index = image_series[key].length === 1 ? 0 : Math.floor(image_series[key].length / 2);
 
-			image_series[key].thumbnail = await getImageSrcFromImageId(image_series[key][instance_index]);
+			try
+			{
+				const f = new File([ await getInstanceAPI(image_series[key].Instances[instance_index]) ], `${ image_series[key].Instances[instance_index] }.dcm`, { type: 'application/dicom' });
+				const i = await convertFilesToImages([ f ]);
+				await i[0];
+				// image_series[key].thumbnail = await getImageSrcFromImageId(image_series[key][instance_index]);
+				image_series[key].thumbnail = await getImageSrcFromImageId(f.image_id);
+			}
+			catch (_error)
+			{
+				LOG(_error)
+			}
 		}
 
 		const series_keys = Object.keys(image_series);
@@ -332,6 +452,11 @@ export default class MainView extends React.PureComponent
 		const showSerie =
 			async serie =>
 			{
+				if (!image_series[serie].images_loaded)
+				{
+					await image_series[serie].loadImages();
+				}
+
 				await this.showSerie(image_series[serie], `VOLUME${ study_index }`, viewport_inputs, study.segmentation, study_index)
 			};
 
@@ -502,7 +627,17 @@ export default class MainView extends React.PureComponent
 													{
 														result.push
 														(
-															<div className="viewport_grid-canvas_panel-item" id={viewport_id} style={{ width: `${ 100 / this.state.CONFIG.layout.width }%`, height: `${ 100 / this.state.CONFIG.layout.height }%`, left: `${ viewport.position % this.state.CONFIG.layout.width / this.state.CONFIG.layout.width * 100 }%`, top: `${ Math.floor(viewport.position / this.state.CONFIG.layout.width) * (1 / this.state.CONFIG.layout.height) * 100 }%` }}>
+															<div
+																className="viewport_grid-canvas_panel-item"
+																id={viewport_id}
+																style=
+																{{
+																	zIndex: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? '3' : '2',
+																	width: viewport.width || `${ 100 / this.state.CONFIG.layout.width }%`,
+																	height: viewport.height || `${ 100 / this.state.CONFIG.layout.height }%`,
+																	left: viewport.left || `${ viewport.position % this.state.CONFIG.layout.width / this.state.CONFIG.layout.width * 100 }%`,
+																	top: viewport.top || `${ Math.floor(viewport.position / this.state.CONFIG.layout.width) * (1 / this.state.CONFIG.layout.height) * 100 }%`
+																}}>
 																{
 																	viewport_index !== 0 ?
 
@@ -518,7 +653,9 @@ export default class MainView extends React.PureComponent
 																						{
 																							{
 																								display: this.state[`imagesAreLoaded${ study_index }`] ? 'none' : 'table',
-																								position: 'relative',
+																								position: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ?  'fixed' : 'relative',
+																								height: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? 'calc(100% + 60px)' : 'initial',
+																								top: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? 0 : 'initial',
 																							}
 																						}
 
@@ -547,7 +684,7 @@ export default class MainView extends React.PureComponent
 																												style={{ width: '50%' }}
 																												onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
 																											>
-																												<span>Click to load files</span>
+																												<span>{locale['Click to load files'][window.__LANG__]}</span>
 																											</div>
 
 																											<div
@@ -555,7 +692,7 @@ export default class MainView extends React.PureComponent
 																												style={{ width: '50%', backgroundColor: 'rgba(0, 0, 0, 0.0625)' }}
 																												onClick={() => document.querySelector(`#data-input-dir-${ study_index }`).click()}
 																											>
-																												<span>Click to load directories</span>
+																												<span>{locale['Click to load directories'][window.__LANG__]}</span>
 																											</div>
 																										</>
 																								}
@@ -568,35 +705,50 @@ export default class MainView extends React.PureComponent
 																						this.state[`modal${ study_index }`] && !this.state[`loading${ study_index }`] ?
 
 																							<div className="viewport_grid-modal">
-																								<div className="viewport_grid-modal-inner">
-																									{
-																										Object.keys(this.state[`image_series${ study_index }`])
-																											.map
-																											(
-																												key =>
-																													<a
-																														key={key}
+																								<div style={{ height: '100%' }}>
+																									<div className="viewport_grid-modal-inner" style={{ width: '50%', height: 'calc(100% - 60px)', display: 'inline-block', borderRight: '1px solid white' }}>
+																										{
+																											Object.keys(this.state[`image_series${ study_index }`])
+																												.map
+																												(
+																													key =>
+																														<a
+																															className={`-_2`}
+																															key={key}
+																															style={{ display: 'inline-block' }}
 
-																														onClick={async evt =>
-																														{
-																															evt.stopPropagation();
+																															onClick={async evt =>
+																															{
+																																evt.stopPropagation();
 
-																															this.setState({ [ `loading${ study_index }` ]: true });
+																																this.setState({ [ `loading${ study_index }` ]: true });
 
-																															await this.state[`showSerie${ study_index }`](key);
+																																await this.state[`showSerie${ study_index }`](key);
 
-																															this.setState({ [ `modal${ study_index }` ]: false, [ `imagesAreLoaded${ study_index }` ]: true, [ `loading${ study_index }` ]: false });
-																														}}
-																													>
-																														<img src={this.state[`image_series${ study_index }`][key].thumbnail} />
-																														{/* <div>Series ID: {this.state[`image_series${ study_index }`][key].series_id}</div> */}
-																														<div>Protocol name: {this.state[`image_series${ study_index }`][key].protocol_name}</div>
-																														<div>Modality: {this.state[`image_series${ study_index }`][key].modality}</div>
-																														<div>Series description: {this.state[`image_series${ study_index }`][key].series_description}</div>
-																														<div>Instance number: {this.state[`image_series${ study_index }`][key].length}</div>
-																													</a>,
-																											)
-																									}
+																																this.setState({ [ `modal${ study_index }` ]: false, [ `imagesAreLoaded${ study_index }` ]: true, [ `loading${ study_index }` ]: false });
+																															}}
+																														>
+																															<div style={{ padding: '10px', overflow: 'hidden' }}>
+																																<img src={this.state[`image_series${ study_index }`][key].thumbnail} />
+																																{/* <div>Series ID: {this.state[`image_series${ study_index }`][key].series_id}</div> */}
+																																<div>{locale['Protocol name'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].protocol_name}</div>
+																																<div>{locale['Modality'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].modality}</div>
+																																<div>{locale['Series description'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].series_description}</div>
+																																<div>{locale['Instance number'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].Instances.length}</div>
+																															</div>
+																														</a>,
+																												)
+																										}
+																									</div>
+
+																									<div style={{ width: '50%', display: 'inline-block', textAlign: 'center' }}>
+																										{/* {locale['Description'][window.__LANG__]} */}
+
+																										<p style={{ color: window.__phase1__ ? 'green' : 'white' }}>{ window.__phase1__ ? <span style={{ color: 'green' }}>✓ </span> : null }Выберите артериальную фазу </p>
+																										<p style={{ color: window.__phase1__ ? 'green' : 'white' }}>{ window.__phase1__ ? <span style={{ color: 'green' }}>✓ </span> : null }Проведите разметку</p>
+																										<p>Выберите портальную фазу</p>
+																										<p>Проведите разметку и отправьте в ИИ сервис</p>
+																									</div>
 																								</div>
 																							</div> :
 
@@ -608,28 +760,36 @@ export default class MainView extends React.PureComponent
 																		)
 																}
 
-																<input
-																	type="file"
-																	id={`data-input${ study_index }`}
-																	style={{ display: 'none' }}
-																	// accept=".dcm"
+																{
+																	!CONFIG.features?.includes('web') ?
 
-																	multiple
+																		<>
+																			<input
+																				type="file"
+																				id={`data-input${ study_index }`}
+																				style={{ display: 'none' }}
+																				// accept=".dcm"
 
-																	onChange={({ target }) => this.startApp(target.files, study_index, study)}
-																/>
+																				multiple
 
-																<input
-																	type="file"
-																	webkitdirectory=""
-																	id={`data-input-dir-${ study_index }`}
-																	style={{ display: 'none' }}
-																	// accept=".dcm"
+																				onChange={({ target }) => this.startApp(target.files, study_index, study)}
+																			/>
 
-																	multiple
+																			<input
+																				type="file"
+																				webkitdirectory=""
+																				id={`data-input-dir-${ study_index }`}
+																				style={{ display: 'none' }}
+																				// accept=".dcm"
 
-																	onChange={({ target }) => this.startApp(target.files, study_index, study)}
-																/>
+																				multiple
+
+																				onChange={({ target }) => this.startApp(target.files, study_index, study)}
+																			/>
+																		</> :
+
+																		null
+																}
 															</div>
 														);
 													}
@@ -642,7 +802,7 @@ export default class MainView extends React.PureComponent
 
 																<div className="viewport_grid-canvas_panel-item-inner" id={viewport_id} style={{ zIndex: this.state.item4_toggle }} />
 
-																{ main_study && this.state[`imagesAreLoaded${ study_index }`] ? <div className="input-element -button" style={{ position: 'absolute', bottom: 4, right: 4, zIndex: 1, color: 'white', cursor: 'pointer' }} onClick={() => this.setState({item4_toggle: !this.state.item4_toggle})}>{ this.state.item4_toggle ? 'Volume' : '3D' }</div> : null }
+																{ main_study && this.state[`imagesAreLoaded${ study_index }`] ? <div className="input-element -button" style={{ position: 'absolute', bottom: 4, right: 4, zIndex: 1, color: 'white', cursor: 'pointer' }} onClick={() => this.setState({item4_toggle: !this.state.item4_toggle})}>{ this.state.item4_toggle ? locale['Volume'][window.__LANG__] : locale['3D'][window.__LANG__] }</div> : null }
 															</div>
 														);
 													}
@@ -711,7 +871,17 @@ export default class MainView extends React.PureComponent
 					}
 				</div>
 
-				<div className="topbar"></div>
+				<div className="topbar">
+					<span
+						className="topbar-back"
+						style={{ position: 'absolute', top: 10, left: 10, zIndex: 1, cursor: 'pointer', fontSize: '40px', lineHeight: '60px', display: this.state[`imagesAreLoaded${ 0 }`] ? 'block' : 'none' }}
+						title={locale['Back to series list'][window.__LANG__]}
+
+						onClick={evt => window.__goBackToSeriesList(evt)}
+					>
+						↩
+					</span>
+				</div>
 				<div className="sidebar"></div>
 			</>
 		);

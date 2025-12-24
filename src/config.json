@@ -48,7 +48,7 @@
 	{
 		"layout":
 		{
-			"width": 3,
+			"width": 2,
 			"height": 1
 		},
 
@@ -71,13 +71,23 @@
 					{
 						"type": "ORTHOGRAPHIC",
 						"orientation": "SAGITTAL",
-						"position": 1
+						"position": 1,
+
+						"width": "50%",
+						"height": "50%",
+						"left": "50%",
+						"top": 0
 					},
 
 					{
 						"type": "ORTHOGRAPHIC",
 						"orientation": "CORONAL",
-						"position": 2
+						"position": 2,
+
+						"width": "50%",
+						"height": "50%",
+						"left": "50%",
+						"top": "50%"
 					}
 				],
 

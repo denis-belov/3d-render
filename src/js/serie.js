@@ -24,9 +24,15 @@ import { addMarkupAPI, getMarkupAPI } from './api';
 
 import { getViewportUIVolume, getViewportUIVolume3D } from './viewport-ui';
 
-import { cache } from '@cornerstonejs/core';
+import { cache, imageLoader } from '@cornerstonejs/core';
+import * as labelmapInterpolation from '@cornerstonejs/labelmap-interpolation';
 
 import { createSegmentationGUI, addSegmentationGUI, activateSegmentationGUI } from './createSegmentationGUI';
+
+import locale from '../locale.json';
+
+console.log('cornerstone', cornerstone)
+console.log('cornerstoneTools', cornerstoneTools)
 
 // NIfTI-1 writer implementation with proper header format
 const NIfTIWriter = {
@@ -437,7 +443,6 @@ export default class Serie extends SerieBase
 {
 	async init (imageIds, volume_id, viewport_inputs, segmentationIsEnabled, study_index, parent)
 	{
-		LOG(imageIds)
 		this.study_index = study_index;
 		this.imageIds = imageIds;
 
@@ -449,6 +454,8 @@ export default class Serie extends SerieBase
 
 		this.series_id = imageIds.series_id;
 
+		LOG('viewport_inputs 123123', viewport_inputs)
+
 		if ((imageIds.modality !== 'MR' && imageIds.modality !== 'CT') || imageIds.length === 1)
 		{
 			this.segmentation_type = __SEGMENTATION_TYPE_STACK__;
@@ -457,7 +464,7 @@ export default class Serie extends SerieBase
 
 			this.data_range = data_range;
 
-			viewport_inputs.length = 1;
+			// viewport_inputs.length = 1;
 
 			viewport_inputs[0].type = cornerstone.Enums.ViewportType.STACK;
 
@@ -470,6 +477,10 @@ export default class Serie extends SerieBase
 		else
 		{
 			this.segmentation_type = __SEGMENTATION_TYPE_VOLUME__;
+
+			viewport_inputs[0].type = cornerstone.Enums.ViewportType.ORTHOGRAPHIC;
+
+			LOG('viewport_inputs', viewport_inputs)
 
 			viewport_inputs.forEach(vi => this.renderingEngine.enableElement(vi));
 
@@ -577,27 +588,9 @@ export default class Serie extends SerieBase
 			}
 			else
 			{
-				// For stack viewports in v4, create segmentation image IDs manually
-				const segmentationImageIds = imageIds.map((imageId, index) => {
-					// Parse the image ID to extract scheme and URL
-					const firstColonIndex = imageId.indexOf(':');
-					const scheme = imageId.substring(0, firstColonIndex);
-					let url = imageId.substring(firstColonIndex + 1);
+				const segmentationImages = await imageLoader.createAndCacheDerivedLabelmapImages(imageIds);
 
-					// Remove frame parameter if present
-					const frameIndex = url.indexOf('frame=');
-					if (frameIndex !== -1) {
-						url = url.substring(0, frameIndex - 1);
-					}
-
-					return `segmentation:${scheme}:${url}#${index}`;
-				});
-
-				const imageIdReferenceMap = new Map();
-
-				this.segmentationImageIds = segmentationImageIds;
-
-				imageIds.forEach((image_id, image_id_index) => imageIdReferenceMap.set(image_id, this.segmentationImageIds[image_id_index]));
+				this.segmentationImageIds = segmentationImages.map((image) => image.imageId);
 
 				this.volume_segm = { volumeId: `${ volume_id }_SEGM` };
 
@@ -608,7 +601,7 @@ export default class Serie extends SerieBase
 						representation:
 						{
 							type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
-							data: { imageIdReferenceMap },
+							data: { imageIds: this.segmentationImageIds.slice() },
 						},
 					},
 				]);
@@ -636,7 +629,8 @@ export default class Serie extends SerieBase
 			{
 				this.smoothing = 20;
 
-				this.setBrushSize(5);
+				// this.setRegionThresholdNegative(0);
+				// this.setRegionThresholdPositive(95);
 
 				let gui_options = null;
 
@@ -908,8 +902,6 @@ export default class Serie extends SerieBase
 						{
 							'filtering': 0,
 							// 'smoothing': 0,
-							'brush size': this.toolGroup._toolInstances.Brush.configuration.brushSize,
-							'single slice': false,
 							'sync': false,
 						},
 
@@ -917,7 +909,7 @@ export default class Serie extends SerieBase
 					};
 				}
 
-				if (window.__CONFIG__.features?.includes('web'))
+				if (window.__CONFIG__.features?.includes('web') && !window.__CONFIG__.features?.includes('web2'))
 				{
 					if (this.study_index === 0)
 					{
@@ -1059,30 +1051,94 @@ export default class Serie extends SerieBase
 				if (this.study_index === 0)
 				{
 					{
-						const tool_names =
+						const tool_names_segmentation_labelmap =
 						[
-							cornerstoneTools.BrushTool.toolName,
+							'Spherical Brush',
+							'Circular Brush',
+							'Spherical Brush Threshold',
+							'Circular Brush Threshold',
+							'Spherical Brush Threshold Island',
 							cornerstoneTools.PaintFillTool.toolName,
 							cornerstoneTools.CircleScissorsTool.toolName,
-							// cornerstoneTools.RegionSegmentTool.toolName,
-							// cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName,
+							cornerstoneTools.SphereScissorsTool.toolName,
+							cornerstoneTools.RegionSegmentTool.toolName,
+							cornerstoneTools.WholeBodySegmentTool.toolName,
+						];
+
+						const tool_names_segmentation_labelmap2 =
+						[
+							locale['Spherical Brush'][window.__LANG__],
+							locale['Circular Brush'][window.__LANG__],
+							locale['Spherical Brush Threshold'][window.__LANG__],
+							locale['Circular Brush Threshold'][window.__LANG__],
+							locale['Spherical Brush Threshold Island'][window.__LANG__],
+							locale['Paint Fill'][window.__LANG__],
+							locale['Circle Scissors'][window.__LANG__],
+							locale['Sphere Scissors'][window.__LANG__],
+							locale['Region Segment'][window.__LANG__],
+							locale['Whole Body Segment'][window.__LANG__],
+						];
+
+						const tool_names_segmentation_contour =
+						[
+							cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName,
+							'Planar Freehand Contour Segmentation Interpolation',
+							cornerstoneTools.LivewireContourSegmentationTool.toolName,
+							'Livewire Contour Segmentation Interpolation',
+							'CatmullRomSplineROI',
+							'CatmullRomSplineROI Interpolation',
+							'LinearSplineROI',
+							'LinearSplineROI Interpolation',
+							'BSplineROI',
+							'BSplineROI Interpolation',
+						];
+
+						const tool_names_segmentation_contour2 =
+						[
+							locale['Planar Freehand Contour Segmentation'][window.__LANG__],
+							locale['Planar Freehand Contour Segmentation Interpolation'][window.__LANG__],
+							locale['Livewire Contour Segmentation'][window.__LANG__],
+							locale['Livewire Contour Segmentation Interpolation'][window.__LANG__],
+							locale['Catmull-Rom Spline ROI'][window.__LANG__],
+							locale['CatmullRomSplineROI Interpolation'][window.__LANG__],
+							locale['Linear Spline ROI'][window.__LANG__],
+							locale['LinearSplineROI Interpolation'][window.__LANG__],
+							locale['B-Spline ROI'][window.__LANG__],
+							locale['BSplineROI Interpolation'][window.__LANG__],
+						];
+
+						const tool_names_non_segmentation =
+						[
+							cornerstoneTools.WindowLevelTool.toolName,
 							cornerstoneTools.LengthTool.toolName,
 							cornerstoneTools.PanTool.toolName,
 							cornerstoneTools.ZoomTool.toolName,
-							cornerstoneTools.WindowLevelTool.toolName,
 						];
 
-						const tool_names2 =
+						const tool_names_non_segmentation2 =
 						[
-							'Brush',
-							'Paint Fill',
-							'Circle Scissors',
-							'Region Segment',
-							'Planar Freehand Contour Segmentation',
-							'Length',
-							'Pan',
-							'Zoom',
-							'Window/Level',
+							locale['Window/Level'][window.__LANG__],
+							locale['Length'][window.__LANG__],
+							locale['Pan'][window.__LANG__],
+							locale['Zoom'][window.__LANG__],
+						];
+
+						const tool_names_segmentation =
+						[
+							...tool_names_segmentation_labelmap,
+							...tool_names_segmentation_contour,
+						];
+
+						const tool_names_segmentation2 =
+						[
+							...tool_names_segmentation_labelmap2,
+							...tool_names_segmentation_contour2,
+						];
+
+						const tool_names =
+						[
+							...tool_names_segmentation,
+							...tool_names_non_segmentation,
 						];
 
 						const createRange = options =>
@@ -1142,6 +1198,11 @@ export default class Serie extends SerieBase
 							range_container.className = 'input-element -button';
 							range_container.innerHTML = options.name;
 
+							if (options.enabled)
+							{
+								range_container.classList.toggle('-active');
+							}
+
 							const input = () =>
 							{
 								range_container.classList.toggle('-active');
@@ -1161,96 +1222,531 @@ export default class Serie extends SerieBase
 
 							evt =>
 							{
-								if (evt.target.className !== 'topbar-button-settings_menu' && evt.target.className !== 'topbar-button-settings')
+								if (evt.target.className !== 'topbar-button-settings_menu' && evt.target.className !== 'topbar-button-settings' &&
+								    !evt.target.closest('.segmentation-dropdown') && !evt.target.closest('.segmentation-dropdown-menu') &&
+								    !evt.target.closest('.interpolation-dropdown') && !evt.target.closest('.interpolation-dropdown-menu'))
 								{
 									Array.from(document.getElementsByClassName('topbar-button-settings_menu')).forEach(el => el.style.display = 'none');
+									Array.from(document.getElementsByClassName('segmentation-dropdown-menu')).forEach(el => el.style.display = 'none');
+									Array.from(document.getElementsByClassName('interpolation-dropdown-menu')).forEach(el => el.style.display = 'none');
 								}
 							},
 						);
 
-						tool_names.forEach
+						const dropdownContainer = document.createElement('div');
+						dropdownContainer.className = 'segmentation-dropdown';
+						dropdownContainer.style.position = 'relative';
+						dropdownContainer.style.display = 'inline-block';
+
+						const dropdownButton = document.createElement('div');
+						dropdownButton.className = 'topbar-button';
+						dropdownButton.innerHTML = `<span>${ locale['Segmentation Tools'][window.__LANG__] }</span><div class="topbar-button-settings"></div>`;
+						dropdownContainer.appendChild(dropdownButton);
+
+						const dropdownMenu = document.createElement('div');
+						dropdownMenu.className = 'segmentation-dropdown-menu';
+						dropdownMenu.style.display = 'none';
+						dropdownMenu.style.position = 'absolute';
+						dropdownMenu.style.top = '100%';
+						dropdownMenu.style.left = '0';
+						dropdownMenu.style.backgroundColor = '#2a2a2a';
+						dropdownMenu.style.border = '1px solid #444';
+						dropdownMenu.style.borderRadius = '4px';
+						dropdownMenu.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
+						dropdownMenu.style.zIndex = '1000';
+						// dropdownMenu.style.minWidth = '200px';
+						dropdownMenu.style.width = 'max-content';
+						dropdownMenu.style.marginTop = '4px';
+
+						// Create Brush settings menu
+						const brushSettings = document.createElement('div');
+						brushSettings.className = 'topbar-button-settings_menu';
+						brushSettings.style.position = 'absolute';
+						brushSettings.style.left = '100%';
+						brushSettings.style.top = '0';
+						brushSettings.style.marginLeft = '4px';
+						brushSettings.style.backgroundColor = 'rgb(42, 42, 42)';
+
+						createRange
+						({
+							container: brushSettings,
+							min: 0,
+							max: 100,
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush'].configuration.brushSize,
+							name: 'Size',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush'].configuration.brushSize = parseInt(evt.target.value));
+							},
+						});
+
+						const brushSettingsThreshold = document.createElement('div');
+						brushSettingsThreshold.className = 'topbar-button-settings_menu';
+						brushSettingsThreshold.style.position = 'absolute';
+						brushSettingsThreshold.style.left = '100%';
+						brushSettingsThreshold.style.top = '0';
+						brushSettingsThreshold.style.marginLeft = '4px';
+						brushSettingsThreshold.style.backgroundColor = 'rgb(42, 42, 42)';
+
+						createRange
+						({
+							container: brushSettingsThreshold,
+							min: 0,
+							max: 100,
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold'].configuration.brushSize,
+							name: 'Size',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold'].configuration.brushSize = parseInt(evt.target.value));
+							},
+						});
+
+						createRange
+						({
+							container: brushSettingsThreshold,
+							min: 0,
+							max: 100,
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.dynamicRadius,
+							name: 'Dynamic radius',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.dynamicRadius = parseInt(evt.target.value));
+							},
+						});
+
+						createCheckbox
+						({
+							container: brushSettingsThreshold,
+							name: 'Dynamic',
+							enabled: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.isDynamic,
+							callback: () =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.isDynamic = !series.toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.isDynamic);
+							},
+						});
+
+						createRange
+						({
+							container: brushSettingsThreshold,
+							min: this.data_range[0],
+							max: this.data_range[1],
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.range[0],
+							name: 'Range min',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.range[0] = parseInt(evt.target.value));
+							},
+						});
+
+						createRange
+						({
+							container: brushSettingsThreshold,
+							min: this.data_range[0],
+							max: this.data_range[1],
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.range[1],
+							name: 'Range max',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold'].configuration.threshold.range[1] = parseInt(evt.target.value));
+							},
+						});
+
+						const brushSettingsThresholdIsland = document.createElement('div');
+						brushSettingsThresholdIsland.className = 'topbar-button-settings_menu';
+						brushSettingsThresholdIsland.style.position = 'absolute';
+						brushSettingsThresholdIsland.style.left = '100%';
+						brushSettingsThresholdIsland.style.top = '0';
+						brushSettingsThresholdIsland.style.marginLeft = '4px';
+						brushSettingsThresholdIsland.style.backgroundColor = 'rgb(42, 42, 42)';
+
+						createRange
+						({
+							container: brushSettingsThresholdIsland,
+							min: 0,
+							max: 100,
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.brushSize,
+							name: 'Size',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.brushSize = parseInt(evt.target.value));
+							},
+						});
+
+						createRange
+						({
+							container: brushSettingsThresholdIsland,
+							min: 0,
+							max: 100,
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.dynamicRadius,
+							name: 'Dynamic radius',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.dynamicRadius = parseInt(evt.target.value));
+							},
+						});
+
+						createCheckbox
+						({
+							container: brushSettingsThresholdIsland,
+							name: 'Dynamic',
+							enabled: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.isDynamic,
+							callback: () =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.isDynamic = !series.toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.isDynamic);
+							},
+						});
+
+						createRange
+						({
+							container: brushSettingsThresholdIsland,
+							min: this.data_range[0],
+							max: this.data_range[1],
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.range[0],
+							name: 'Range min',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.range[0] = parseInt(evt.target.value));
+							},
+						});
+
+						createRange
+						({
+							container: brushSettingsThresholdIsland,
+							min: this.data_range[0],
+							max: this.data_range[1],
+							step: 1,
+							value: window.__series[0].toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.range[1],
+							name: 'Range max',
+							callback: evt =>
+							{
+								window.__series.forEach(series => series.toolGroup._toolInstances['Spherical Brush Threshold Island'].configuration.threshold.range[1] = parseInt(evt.target.value));
+							},
+						});
+
+						// Create Region Segment settings menu
+						const regionSegmentSettings = document.createElement('div');
+						regionSegmentSettings.className = 'topbar-button-settings_menu';
+						regionSegmentSettings.style.position = 'absolute';
+						regionSegmentSettings.style.left = '100%';
+						regionSegmentSettings.style.top = '0';
+						regionSegmentSettings.style.marginLeft = '4px';
+						regionSegmentSettings.style.backgroundColor = 'rgb(42, 42, 42)';
+
+						createRange
+						({
+							container: regionSegmentSettings,
+							min: 0,
+							max: 100,
+							step: 1,
+							value: 5,
+							name: 'Size',
+							callback: evt => this.setRegionThresholdNegative(parseInt(evt.target.value)),
+						});
+
+						createRange
+						({
+							container: regionSegmentSettings,
+							min: 0,
+							max: 100,
+							step: 1,
+							value: 95,
+							name: 'Size',
+							callback: evt => this.setRegionThresholdPositive(parseInt(evt.target.value)),
+						});
+
+						// Create dropdown menu items for segmentation tools
+						tool_names_segmentation.forEach
 						(
 							(tool_name, tool_name_index) =>
 							{
-								const button = document.createElement('div');
+								const menuItem = document.createElement('div');
+								menuItem.className = 'segmentation-dropdown-item';
+								menuItem.style.padding = '8px 12px';
+								menuItem.style.cursor = 'pointer';
+								menuItem.style.color = '#fff';
+								menuItem.style.borderBottom = tool_name_index < tool_names_segmentation.length - 1 ? '1px solid #444' : 'none';
+								menuItem.style.display = 'flex';
+								menuItem.style.justifyContent = 'space-between';
+								menuItem.style.alignItems = 'center';
+								menuItem.innerHTML = `<span>${ tool_names_segmentation2[tool_name_index] }</span>`;
 
-								button.className = 'topbar-button';
-								button.innerHTML = `<span>${ tool_names2[tool_name_index] }</span><div class="topbar-button-settings"></div>`;
-
-								if (tool_name !== 'Brush')
+								if (tool_name === 'Spherical Brush')
 								{
-									button.innerHTML = `<span>${ tool_names2[tool_name_index] }</span>`;
-								}
+									menuItem.innerHTML += `<div class="topbar-button-settings"></div>`;
+									menuItem.style.position = 'relative';
 
-								if (tool_name === 'Brush')
-								{
-									button.className = 'topbar-button -active';
-								}
-
-								document.getElementsByClassName('topbar')[0].appendChild(button);
-
-								if (tool_name === 'Brush')
-								{
-									const settings = document.createElement('div');
-									settings.className = 'topbar-button-settings_menu';
-
-									button.getElementsByClassName('topbar-button-settings')[0].addEventListener
+									menuItem.querySelector('.topbar-button-settings').addEventListener
 									(
 										'click',
-
 										evt =>
 										{
 											evt.stopPropagation();
-
 											Array.from(document.getElementsByClassName('topbar-button-settings_menu'))
-												.filter(el => el !== button.getElementsByClassName('topbar-button-settings_menu')[0])
+												.filter(el => el !== brushSettings)
 												.forEach(el => el.style.display = 'none');
-
-											settings.style.display = settings.style.display === 'block' ? 'none' : 'block';
+											brushSettings.style.display = brushSettings.style.display === 'block' ? 'none' : 'block';
 										},
 									);
 
-									createRange
-									({
-										container: settings,
-										min: 0,
-										max: 100,
-										step: 1,
-										value: 5,
-										name: 'Size',
-										callback: evt => this.setBrushSize(parseInt(evt.target.value)),
-									});
-
-									createCheckbox
-									({
-										container: settings,
-										name: 'Single slice',
-										callback: value =>
-										{
-											window.__series
-												.forEach
-												(
-													_this =>
-													{
-														_this.single_slice = value;
-
-														if (_this.single_slice)
-														{
-															this.toolGroup._toolInstances.Brush.configuration.activeStrategy = this.toolGroup._toolInstances.Brush.configuration.activeStrategy.replace('CIRCLE', 'SPHERE');
-														}
-														else
-														{
-															this.toolGroup._toolInstances.Brush.configuration.activeStrategy = this.toolGroup._toolInstances.Brush.configuration.activeStrategy.replace('SPHERE', 'CIRCLE');
-														}
-
-														cornerstoneTools.utilities.triggerAnnotationRenderForViewportIds(_this.renderingEngine, _this.viewport_inputs.map(_ => _.viewportId));
-													},
-												);
-										},
-									});
-
-									button.appendChild(settings);
+									menuItem.appendChild(brushSettings);
 								}
+
+								if (tool_name === 'Spherical Brush Threshold')
+								{
+									menuItem.innerHTML += `<div class="topbar-button-settings"></div>`;
+									menuItem.style.position = 'relative';
+
+									menuItem.querySelector('.topbar-button-settings').addEventListener
+									(
+										'click',
+										evt =>
+										{
+											evt.stopPropagation();
+											Array.from(document.getElementsByClassName('topbar-button-settings_menu'))
+												.filter(el => el !== brushSettingsThreshold)
+												.forEach(el => el.style.display = 'none');
+											brushSettingsThreshold.style.display = brushSettingsThreshold.style.display === 'block' ? 'none' : 'block';
+										},
+									);
+
+									menuItem.appendChild(brushSettingsThreshold);
+								}
+
+								if (tool_name === 'Spherical Brush Threshold Island')
+								{
+									menuItem.innerHTML += `<div class="topbar-button-settings"></div>`;
+									menuItem.style.position = 'relative';
+
+									menuItem.querySelector('.topbar-button-settings').addEventListener
+									(
+										'click',
+										evt =>
+										{
+											evt.stopPropagation();
+											Array.from(document.getElementsByClassName('topbar-button-settings_menu'))
+												.filter(el => el !== brushSettingsThresholdIsland)
+												.forEach(el => el.style.display = 'none');
+											brushSettingsThresholdIsland.style.display = brushSettingsThresholdIsland.style.display === 'block' ? 'none' : 'block';
+										},
+									);
+
+									menuItem.appendChild(brushSettingsThresholdIsland);
+								}
+
+								if (tool_name === cornerstoneTools.RegionSegmentTool.toolName)
+								{
+									menuItem.innerHTML += `<div class="topbar-button-settings"></div>`;
+									menuItem.style.position = 'relative';
+
+									menuItem.querySelector('.topbar-button-settings').addEventListener
+									(
+										'click',
+										evt =>
+										{
+											evt.stopPropagation();
+											Array.from(document.getElementsByClassName('topbar-button-settings_menu'))
+												.filter(el => el !== regionSegmentSettings)
+												.forEach(el => el.style.display = 'none');
+											regionSegmentSettings.style.display = regionSegmentSettings.style.display === 'block' ? 'none' : 'block';
+										},
+									);
+
+									menuItem.appendChild(regionSegmentSettings);
+								}
+
+								menuItem.addEventListener('mouseenter', () => {
+									menuItem.style.backgroundColor = '#3a3a3a';
+								});
+
+								menuItem.addEventListener('mouseleave', () => {
+									menuItem.style.backgroundColor = 'transparent';
+								});
+
+								menuItem.addEventListener
+								(
+									'click',
+									async evt =>
+									{
+										evt.stopPropagation();
+										await Promise.all
+										(
+											window.__series.map
+											(
+												async series =>
+												{
+													Array.from(document.getElementsByClassName('topbar-button')).forEach(el => el.classList.remove('-active'));
+													dropdownButton.classList.add('-active');
+													if (typeof interpolationDropdownButton !== 'undefined') {
+														interpolationDropdownButton.classList.remove('-active');
+													}
+
+													series.toolGroup.setToolPassive(series.toolGroup.currentActivePrimaryToolName)
+
+													if (tool_names_segmentation_contour.includes(tool_name))
+													{
+														await series.setActiveSegmentation(this.volume_segm.volumeId + '_contour');
+													}
+													else
+													{
+														await series.setActiveSegmentation(this.volume_segm.volumeId);
+													}
+
+													series.toolGroup.setToolActive(tool_name, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] });
+												},
+											),
+										);
+
+										// Update dropdown button text to show selected tool
+										dropdownButton.querySelector('span').textContent = tool_names_segmentation2[tool_name_index];
+										dropdownMenu.style.display = 'none';
+									},
+								);
+
+								dropdownMenu.appendChild(menuItem);
+							},
+						);
+
+						dropdownButton.querySelector('.topbar-button-settings').addEventListener
+						(
+							'click',
+							evt =>
+							{
+								evt.stopPropagation();
+								Array.from(document.getElementsByClassName('segmentation-dropdown-menu'))
+									.filter(el => el !== dropdownMenu)
+									.forEach(el => el.style.display = 'none');
+								dropdownMenu.style.display = dropdownMenu.style.display === 'block' ? 'none' : 'block';
+							},
+						);
+
+						dropdownButton.addEventListener
+						(
+							'click',
+							evt =>
+							{
+								evt.stopPropagation();
+								Array.from(document.getElementsByClassName('segmentation-dropdown-menu'))
+									.filter(el => el !== dropdownMenu)
+									.forEach(el => el.style.display = 'none');
+								dropdownMenu.style.display = dropdownMenu.style.display === 'block' ? 'none' : 'block';
+							},
+						);
+
+						dropdownContainer.appendChild(dropdownMenu);
+						document.getElementsByClassName('topbar')[0].appendChild(dropdownContainer);
+
+						// Create Interpolation dropdown
+						const interpolationDropdownContainer = document.createElement('div');
+						interpolationDropdownContainer.className = 'interpolation-dropdown';
+						interpolationDropdownContainer.style.position = 'relative';
+						interpolationDropdownContainer.style.display = 'inline-block';
+
+						const interpolationDropdownButton = document.createElement('div');
+						interpolationDropdownButton.className = 'topbar-button';
+						interpolationDropdownButton.innerHTML = `<span>${ locale['Interpolation'][window.__LANG__] }</span><div class="topbar-button-settings"></div>`;
+						interpolationDropdownContainer.appendChild(interpolationDropdownButton);
+
+						const interpolationDropdownMenu = document.createElement('div');
+						interpolationDropdownMenu.className = 'interpolation-dropdown-menu';
+						interpolationDropdownMenu.style.display = 'none';
+						interpolationDropdownMenu.style.position = 'absolute';
+						interpolationDropdownMenu.style.top = '100%';
+						interpolationDropdownMenu.style.left = '0';
+						interpolationDropdownMenu.style.backgroundColor = '#2a2a2a';
+						interpolationDropdownMenu.style.border = '1px solid #444';
+						interpolationDropdownMenu.style.borderRadius = '4px';
+						interpolationDropdownMenu.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
+						interpolationDropdownMenu.style.zIndex = '1000';
+						interpolationDropdownMenu.style.width = 'max-content';
+						interpolationDropdownMenu.style.marginTop = '4px';
+
+						const interpolationOptions = [
+							{ key: 'Labelmap', value: 'labelmap' },
+							{ key: 'Contour', value: 'contour' }
+						];
+
+						interpolationOptions.forEach((option, index) => {
+							const menuItem = document.createElement('div');
+							menuItem.className = 'interpolation-dropdown-item';
+							menuItem.style.padding = '8px 12px';
+							menuItem.style.cursor = 'pointer';
+							menuItem.style.color = '#fff';
+							menuItem.style.borderBottom = index < interpolationOptions.length - 1 ? '1px solid #444' : 'none';
+							menuItem.style.display = 'flex';
+							menuItem.style.justifyContent = 'space-between';
+							menuItem.style.alignItems = 'center';
+							menuItem.innerHTML = `<span>${ locale[option.key][window.__LANG__] }</span>`;
+
+							menuItem.addEventListener('mouseenter', () => {
+								menuItem.style.backgroundColor = '#3a3a3a';
+							});
+
+							menuItem.addEventListener('mouseleave', () => {
+								menuItem.style.backgroundColor = 'transparent';
+							});
+
+							menuItem.addEventListener('click', async evt => {
+								evt.stopPropagation();
+								Array.from(document.getElementsByClassName('topbar-button')).forEach(el => el.classList.remove('-active'));
+								interpolationDropdownButton.classList.add('-active');
+								dropdownButton.classList.remove('-active');
+
+								if (option.value === 'labelmap') {
+									const segmentIndex = cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(this.volume_segm.volumeId);
+									labelmapInterpolation.interpolate({
+										segmentationId: this.volume_segm.volumeId,
+										segmentIndex: Number(segmentIndex),
+									});
+								} else if (option.value === 'contour') {
+									// Contour interpolation logic can be added here if needed
+									console.log('Contour interpolation');
+								}
+
+								interpolationDropdownButton.querySelector('span').textContent = locale[option.key][window.__LANG__];
+								interpolationDropdownMenu.style.display = 'none';
+							});
+
+							interpolationDropdownMenu.appendChild(menuItem);
+						});
+
+						interpolationDropdownButton.querySelector('.topbar-button-settings').addEventListener('click', evt => {
+							evt.stopPropagation();
+							Array.from(document.getElementsByClassName('interpolation-dropdown-menu'))
+								.filter(el => el !== interpolationDropdownMenu)
+								.forEach(el => el.style.display = 'none');
+							interpolationDropdownMenu.style.display = interpolationDropdownMenu.style.display === 'block' ? 'none' : 'block';
+						});
+
+						interpolationDropdownButton.addEventListener('click', evt => {
+							evt.stopPropagation();
+							Array.from(document.getElementsByClassName('interpolation-dropdown-menu'))
+								.filter(el => el !== interpolationDropdownMenu)
+								.forEach(el => el.style.display = 'none');
+							interpolationDropdownMenu.style.display = interpolationDropdownMenu.style.display === 'block' ? 'none' : 'block';
+						});
+
+						interpolationDropdownContainer.appendChild(interpolationDropdownMenu);
+						document.getElementsByClassName('topbar')[0].appendChild(interpolationDropdownContainer);
+
+						tool_names_non_segmentation.forEach
+						(
+							(_, tool_name_index) =>
+							{
+								const tool_name = tool_names_non_segmentation[tool_name_index];
+								const button = document.createElement('div');
+
+								button.className = 'topbar-button';
+								button.innerHTML = `<span>${ tool_names_non_segmentation2[tool_name_index] }</span>`;
+
+								document.getElementsByClassName('topbar')[0].appendChild(button);
 
 								button.addEventListener
 								(
@@ -1264,6 +1760,8 @@ export default class Serie extends SerieBase
 											{
 												Array.from(document.getElementsByClassName('topbar-button')).forEach(el => el.classList.remove('-active'));
 												button.classList.add('-active');
+												dropdownButton.classList.remove('-active');
+												interpolationDropdownButton.classList.remove('-active');
 
 												Object.keys(series.toolGroup._toolInstances).filter(inst => tool_names.includes(inst)).forEach(inst => series.toolGroup.setToolPassive(inst));
 
@@ -1570,8 +2068,6 @@ export default class Serie extends SerieBase
 					this.single_slice = true;
 				}
 
-				this.toolGroup.setToolActive(cornerstoneTools.BrushTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] });
-
 
 
 				window.addEventListener
@@ -1582,15 +2078,13 @@ export default class Serie extends SerieBase
 					{
 						if (evt.ctrlKey || evt.metaKey)
 						{
-							this.toolGroup._toolInstances.Brush.configuration.erase = !this.toolGroup._toolInstances.Brush.configuration.erase;
-
-							if (this.toolGroup._toolInstances.Brush.configuration.activeStrategy.includes('ERASE'))
+							if (this.toolGroup._toolInstances['Spherical Brush'].configuration.activeStrategy.includes('ERASE'))
 							{
-								this.toolGroup._toolInstances.Brush.configuration.activeStrategy = this.toolGroup._toolInstances.Brush.configuration.activeStrategy.replace('ERASE', 'FILL');
+								this.toolGroup._toolInstances['Spherical Brush'].configuration.activeStrategy = this.toolGroup._toolInstances['Spherical Brush'].configuration.activeStrategy.replace('ERASE', 'FILL');
 							}
 							else
 							{
-								this.toolGroup._toolInstances.Brush.configuration.activeStrategy = this.toolGroup._toolInstances.Brush.configuration.activeStrategy.replace('FILL', 'ERASE');
+								this.toolGroup._toolInstances['Spherical Brush'].configuration.activeStrategy = this.toolGroup._toolInstances['Spherical Brush'].configuration.activeStrategy.replace('FILL', 'ERASE');
 							}
 
 							cornerstoneTools.utilities.triggerAnnotationRenderForViewportIds(this.renderingEngine, this.viewport_inputs.map(_ => _.viewportId));
@@ -1647,11 +2141,30 @@ export default class Serie extends SerieBase
 		toolGroup.addTool(cornerstoneTools.PanTool.toolName);
 		toolGroup.addTool(cornerstoneTools.ZoomTool.toolName);
 		toolGroup.addTool(cornerstoneTools.WindowLevelTool.toolName);
-		toolGroup.addTool(cornerstoneTools.BrushTool.toolName, { activeStrategy: 'FILL_INSIDE_SPHERE' });
+		// toolGroup.addTool(cornerstoneTools.BrushTool.toolName);
 		toolGroup.addTool(cornerstoneTools.PaintFillTool.toolName);
 		toolGroup.addTool(cornerstoneTools.CircleScissorsTool.toolName);
+		toolGroup.addTool(cornerstoneTools.SphereScissorsTool.toolName);
 		toolGroup.addTool(cornerstoneTools.RegionSegmentTool.toolName, { positiveSeedVariance: 0.1, negativeSeedVariance: 0.1 });
 		toolGroup.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName);
+		toolGroup.addToolInstance('Planar Freehand Contour Segmentation Interpolation', cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName, { interpolation: { enabled: true, showInterpolationPolyline: true }, actions: { interpolate: true } } );
+		toolGroup.addTool(cornerstoneTools.LivewireContourSegmentationTool.toolName);
+		toolGroup.addToolInstance('Livewire Contour Segmentation Interpolation', cornerstoneTools.LivewireContourSegmentationTool.toolName, { interpolation: { enabled: true, showInterpolationPolyline: true } } );
+		// toolGroup.addTool(cornerstoneTools.SplineContourSegmentationTool.toolName);
+		toolGroup.addTool(cornerstoneTools.WholeBodySegmentTool.toolName);
+
+		toolGroup.addToolInstance('Spherical Brush', cornerstoneTools.BrushTool.toolName, { activeStrategy: 'FILL_INSIDE_SPHERE', brushSize: 10 } );
+		toolGroup.addToolInstance('Circular Brush', cornerstoneTools.BrushTool.toolName, { activeStrategy: 'FILL_INSIDE_CIRCLE', brushSize: 10 } );
+		toolGroup.addToolInstance('Spherical Brush Threshold', cornerstoneTools.BrushTool.toolName, { activeStrategy: 'THRESHOLD_INSIDE_SPHERE', brushSize: 10, threshold: { isDynamic: true, dynamicRadius: 2, range: [ 200, 1000 ] } } );
+		toolGroup.addToolInstance('Circular Brush Threshold', cornerstoneTools.BrushTool.toolName, { activeStrategy: 'THRESHOLD_INSIDE_CIRCLE', brushSize: 10, threshold: { isDynamic: true, dynamicRadius: 2, range: [ 200, 1000 ] } } );
+		toolGroup.addToolInstance('Spherical Brush Threshold Island', cornerstoneTools.BrushTool.toolName, { activeStrategy: 'THRESHOLD_INSIDE_SPHERE_WITH_ISLAND_REMOVAL', brushSize: 10, threshold: { isDynamic: true, dynamicRadius: 2, range: [ 200, 1000 ] } } );
+
+		toolGroup.addToolInstance('CatmullRomSplineROI', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.CatmullRom } } );
+		toolGroup.addToolInstance('CatmullRomSplineROI Interpolation', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.CatmullRom }, interpolation: { enabled: true, showInterpolationPolyline: true } } );
+		toolGroup.addToolInstance('LinearSplineROI', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.Linear } } );
+		toolGroup.addToolInstance('LinearSplineROI Interpolation', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.Linear }, interpolation: { enabled: true, showInterpolationPolyline: true } } );
+		toolGroup.addToolInstance('BSplineROI', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.BSpline } } );
+		toolGroup.addToolInstance('BSplineROI Interpolation', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.BSpline }, interpolation: { enabled: true, showInterpolationPolyline: true } } );
 
 
 
@@ -1791,7 +2304,8 @@ export default class Serie extends SerieBase
 		const {
 			filename = 'volume',
 			segmentation = false,
-			dataType = 16 // 16 = float32, 4 = int16, 8 = int32
+			dataType = 16, // 16 = float32, 4 = int16, 8 = int32
+			download = true,
 		} = options;
 
 		if (!this.volume) {
@@ -1862,22 +2376,25 @@ export default class Serie extends SerieBase
 				intent_name: segmentation ? 'Segmentation' : 'Volume'
 			});
 
-			// Create NIfTI file
 			const niftiFile = NIfTIWriter.write(niftiHeader, dataArray);
-
-			// Download the file
-			downloadArraybuffer(niftiFile, `${filename}`);
 
 			// Read and verify the created NIfTI file
 			this.readNiftiFile(niftiFile, filename);
 
-			console.log('NIfTI file created successfully:', {
-				dimensions,
-				spacing,
-				origin,
-				dataType,
-				segmentation
-			});
+			// console.log('NIfTI file created successfully:', {
+			// 	dimensions,
+			// 	spacing,
+			// 	origin,
+			// 	dataType,
+			// 	segmentation
+			// });
+
+			if (download)
+			{
+				downloadArraybuffer(niftiFile, `${filename}`);
+			}
+
+			return niftiFile;
 
 		} catch (error) {
 			console.error('Error converting volume to NIfTI:', error);
@@ -2063,23 +2580,6 @@ export default class Serie extends SerieBase
 		});
 	}
 
-	/**
-	 * Convert segmentation data to NIfTI format
-	 * @param {string} filename - Output filename (without extension)
-	 */
-	async convertSegmentationToNifti(filename = 'segmentation')
-	{
-		if (!this.volume_segm || !this.volume_segm.scalarData) {
-			throw new Error('No segmentation data available for conversion');
-		}
-
-		return this.convertVolumeToNifti({
-			filename,
-			segmentation: true,
-			dataType: 8 // int32 for segmentation labels
-		});
-	}
-
 	addSegmentation (name)
 	{
 		if (this.segmentations.length >= MAX_SEGMENTATION_COUNT)
@@ -2249,10 +2749,51 @@ export default class Serie extends SerieBase
 					data:
 					{
 						volumeId: volume.volumeId,
+						referencedVolumeId: volumeId,
+					},
+				},
+			},
+
+			{
+				segmentationId: volume.volumeId + '_contour',
+
+				representation:
+				{
+					type: cornerstoneTools.Enums.SegmentationRepresentations.Contour,
+
+					data:
+					{
+						volumeId: volume.volumeId + '_contour',
 					},
 				},
 			},
 		]);
+
+		this.viewport_inputs
+			.forEach
+			(
+				viewport_input =>
+				{
+					cornerstoneTools.segmentation.removeSegmentationRepresentations
+					(
+						viewport_input.viewportId,
+						[{ segmentationId: volume.volumeId, type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap }]
+					);
+				},
+			);
+
+		this.viewport_inputs
+			.forEach
+			(
+				viewport_input =>
+				{
+					cornerstoneTools.segmentation.addSegmentationRepresentations
+					(
+						viewport_input.viewportId,
+						[{ segmentationId: volume.volumeId + '_contour', type: cornerstoneTools.Enums.SegmentationRepresentations.Contour }]
+					);
+				},
+			);
 
 		const segmentation_viewports = {};
 
@@ -2270,14 +2811,42 @@ export default class Serie extends SerieBase
 		return volume;
 	}
 
-	setBrushSize (size)
+	async setActiveSegmentation (segmentation_id)
+	{
+		this.viewport_inputs
+			.forEach
+			(
+				viewport_input =>
+				{
+					cornerstoneTools.segmentation.activeSegmentation.setActiveSegmentation(viewport_input.viewportId, segmentation_id);
+				},
+			);
+
+		this.renderingEngine.render();
+	}
+
+	setRegionThresholdNegative (size)
 	{
 		window.__series
 			.forEach
 			(
 				_this =>
 				{
-					_this.toolGroup._toolInstances.Brush.configuration.brushSize = size;
+					_this.toolGroup._toolInstances.RegionSegment.configuration.positiveSeedVariance = size;
+
+					_this.toolGroup._toolInstances.RegionSegment.refresh();
+				},
+			);
+	}
+
+	setRegionThresholdPositive (size)
+	{
+		window.__series
+			.forEach
+			(
+				_this =>
+				{
+					_this.toolGroup._toolInstances.RegionSegment.configuration.positiveSeedVariance = size;
 				},
 			);
 	}
