@@ -11,7 +11,7 @@ import color_LUT from './color-LUT';
 
 
 
-// cornerstone.VolumeViewport3D.prototype.updateClippingPlanesForActors = () => null;
+cornerstone.VolumeViewport3D.prototype.updateClippingPlanesForActors = () => null;
 
 
 
@@ -35,23 +35,11 @@ import color_LUT from './color-LUT';
 
 const flags = process.env;
 
-LOG('window.top', window.top);
-
 const url_params = new URLSearchParams(window.top.location.search);
-
-console.log('url_params', window.location, url_params);
-
-setTimeout(() => {
-	const url_params = new URLSearchParams(window.location.search);
-
-	console.log('url_params', window.location, url_params);
-}, 3000);
 
 for (const [ key, value ] of url_params)
 {
-	console.log('key', key, value);
 	flags[`__${ key.replace(/-/g, '_').toUpperCase() }__`] = value || true;
-	console.log('flags', flags[`__${ key.replace(/-/g, '_').toUpperCase() }__`]);
 }
 
 Object.keys(flags)
@@ -129,12 +117,15 @@ window.addEventListener
 		{
 			await initCornerstone();
 
+			localStorage.removeItem('debug');
+
 			cornerstoneTools.addTool(cornerstoneTools.StackScrollTool);
 			cornerstoneTools.addTool(cornerstoneTools.LengthTool);
 			cornerstoneTools.addTool(cornerstoneTools.PanTool);
 			cornerstoneTools.addTool(cornerstoneTools.ZoomTool);
 			cornerstoneTools.addTool(cornerstoneTools.WindowLevelTool);
 			cornerstoneTools.addTool(cornerstoneTools.TrackballRotateTool);
+			cornerstoneTools.addTool(cornerstoneTools.VolumeRotateTool);
 			cornerstoneTools.addTool(cornerstoneTools.BrushTool);
 			cornerstoneTools.addTool(cornerstoneTools.PaintFillTool);
 			cornerstoneTools.addTool(cornerstoneTools.CircleScissorsTool);

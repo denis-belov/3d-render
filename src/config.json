@@ -215,61 +215,61 @@
     ]
   },
 
-  "atrium":
-  {
-    "features":
-    [
-      "filtering"
-    ],
+	"atrium":
+	{
+		"features":
+		[
+			"filtering"
+		],
 
-    "tools":
-    [
-      "Length",
-      "Brush",
-      "Pan",
-      "Zoom",
-      "WindowLevel"
-    ],
+		"tools":
+		[
+			"Length",
+			"Brush",
+			"Pan",
+			"Zoom",
+			"WindowLevel"
+		],
 
-    "layout":
-    {
-      "width": 2,
-      "height": 2
-    },
+		"layout":
+		{
+			"width": 2,
+			"height": 2
+		},
 
-    "studies":
-    [
-      {
-        "viewports":
-        [
-          {
-            "type": "ORTHOGRAPHIC",
-            "orientation": "AXIAL",
-            "position": 0
-          },
+		"studies":
+		[
+			{
+				"viewports":
+				[
+					{
+						"type": "ORTHOGRAPHIC",
+						"orientation": "AXIAL",
+						"position": 0
+					},
 
-          {
-            "type": "ORTHOGRAPHIC",
-            "orientation": "SAGITTAL",
-            "position": 1
-          },
+					{
+						"type": "ORTHOGRAPHIC",
+						"orientation": "SAGITTAL",
+						"position": 1
+					},
 
-          {
-            "type": "ORTHOGRAPHIC",
-            "orientation": "CORONAL",
-            "position": 2
-          },
+					{
+						"type": "ORTHOGRAPHIC",
+						"orientation": "CORONAL",
+						"position": 2
+					},
 
-          {
-            "type": "VOLUME_3D",
-            "position": 3
-          }
-        ],
+					{
+						"type": "VOLUME_3D",
+						"position": 3
+					}
+				],
 
-        "segmentation": true
-      }
-    ]
-  },
+				"segmentation": true
+			}
+		]
+	},
 
   "single_study_2x2_":
   {

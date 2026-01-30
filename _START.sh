@@ -14,9 +14,11 @@ else
 	TOOL_OPTIONS=--open
 fi
 
-export __WEB__=true
-export __CONFIG__=web2
-export __API_PACS__=https://stage.pacs.fishbirds.ru
+# export __WEB__=true
+# export __CONFIG__=web2
+# export __API_PACS__=https://stage.pacs.fishbirds.ru
+
+export __CONFIG__=atrium
 
 cd $DIR
 node --max-old-space-size=8192 $TOOL --env=development --mode=development --stats-children $TOOL_OPTIONS

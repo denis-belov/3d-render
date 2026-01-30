@@ -124,6 +124,11 @@
 		"en": "Opacity",
 		"ru": "Непрозрачность"
 	},
+	"Surface opacity":
+	{
+		"en": "Surface opacity",
+		"ru": "Прозрачность поверхности"
+	},
 	"Segment with opacity":
 	{
 		"en": "Segment with opacity",
@@ -323,5 +328,30 @@
 	{
 		"en": "Contour",
 		"ru": "Контур"
+	},
+	"Vertex Colors":
+	{
+		"en": "Vertex Colors",
+		"ru": "Цвета вершин"
+	},
+	"Toggle Vertex Colors":
+	{
+		"en": "Toggle Vertex Colors",
+		"ru": "Переключить цвета вершин"
+	},
+	"Only 3D":
+	{
+		"en": "Only 3D",
+		"ru": "Только 3D"
+	},
+	"Set blue/red":
+	{
+		"en": "Set blue/red",
+		"ru": "Установить синий/красный"
+	},
+	"blue/red":
+	{
+		"en": "blue/red",
+		"ru": "синий/красный"
 	}
 }

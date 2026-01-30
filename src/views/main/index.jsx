@@ -43,46 +43,40 @@ const getImageSrcFromImageId = async imageId =>
 	return canvas.toDataURL();
 };
 
-const convertFilesToImages = (files, image_ids) =>
+const convertFilesToImages = files =>
 {
 	return Array.from(files)
 		.map
 		(
-			async (file, index) =>
+			async file =>
 			{
 				const image_id = dicomImageLoader.wadouri.fileManager.add(file);
 
 				WADORSHeaderProvider.addInstance(image_id, await file.arrayBuffer());
 
-				file.image_id = image_id;
-
-				if (image_ids)
-				{
-					image_ids[index] = image_id;
-				}
-
-				return dicomImageLoader.wadouri.loadFileRequest(image_id);
+				return dicomImageLoader.wadouri.loadFileRequest(image_id).then(() => image_id);
 			},
 		)
 };
 
-const groupImagesToSeries = (images, files) =>
+const groupImagesToSeries = (image_ids, files) =>
 {
 	const image_series = {};
 
-	images
+	image_ids
 		.forEach
 		(
-			({ imageId, data }, index) =>
+			image_id =>
 			{
-				const image_instance_data = cornerstone.metaData.get('instance', imageId);
+				// const image_instance_data = cornerstone.metaData.get('instance', image_id);
+				const image_instance_data = WADORSHeaderProvider.get('instance', image_id);
 
-				dicomImageLoader.wadors.metaDataManager
-					.add
-					(
-						imageId,
-						image_instance_data
-					);
+				// dicomImageLoader.wadors.metaDataManager
+				// 	.add
+				// 	(
+				// 		image_id,
+				// 		image_instance_data
+				// 	);
 
 				// const image_series_id =
 				// 	`${ image_instance_data.SeriesInstanceUID }
@@ -95,7 +89,7 @@ const groupImagesToSeries = (images, files) =>
 
 				image_series[image_series_id] ||= [];
 
-				image_series[image_series_id].push(imageId);
+				image_series[image_series_id].push(image_id);
 
 				image_series[image_series_id].series_id = image_instance_data.SeriesInstanceUID;
 				image_series[image_series_id].modality = image_instance_data.Modality;
@@ -107,7 +101,7 @@ const groupImagesToSeries = (images, files) =>
 					image_series[image_series_id].files = [];
 				}
 
-				image_series[image_series_id].files.push(files.find(file => file.image_id === imageId));
+				image_series[image_series_id].files.push(files.find(file => file.image_id === image_id));
 			},
 		);
 
@@ -118,13 +112,13 @@ const groupImagesToSeries = (images, files) =>
 
 export async function convertFilesToSeries (study_files)
 {
-	const images =
+	const image_ids =
 		(await Promise.allSettled(convertFilesToImages(study_files)))
 			.filter(promise => (promise.status === 'fulfilled'))
 			.map(promise => promise.value)
 			.filter(value => value);
 
-	const image_series = groupImagesToSeries(images, Array.from(study_files));
+	const image_series = groupImagesToSeries(image_ids, Array.from(study_files));
 
 	return image_series;
 }
@@ -190,8 +184,6 @@ export async function getWebSeries (study_uuid)
 		// image_series = _image_series;
 	}
 
-	LOG('image_series', image_series)
-
 	return image_series;
 }
 
@@ -205,10 +197,13 @@ export default class MainView extends React.PureComponent
 
 		this.state =
 		{
-			item4_toggle: 1,
 			loading: false,
 			CONFIG,
 		};
+
+		// Cache adjacent viewports to avoid recalculating on every render
+		this.adjacentViewports = null;
+		this.adjacentViewportsCalculated = false;
 
 		window.__goBackToSeriesList = async evt =>
 		{
@@ -229,6 +224,10 @@ export default class MainView extends React.PureComponent
 				);
 
 			++window.ITERATION;
+
+			// Reset adjacent viewports cache when going back
+			this.adjacentViewports = null;
+			this.adjacentViewportsCalculated = false;
 
 			const state = {};
 
@@ -306,7 +305,11 @@ export default class MainView extends React.PureComponent
 				await this.startApp(window.__STUDY__, study_index, CONFIG.studies[study_index]);
 			}
 		}
+
+		// Handlers are now initialized after serie.init() completes
 	}
+
+	// componentDidUpdate (prevProps, prevState) {}
 
 	async showSerie (...args)
 	{
@@ -391,8 +394,6 @@ export default class MainView extends React.PureComponent
 					{
 						const files = [];
 
-						LOG(JSON.stringify(series.Instances))
-
 						await Promise.all
 						(
 							series.Instances
@@ -411,11 +412,7 @@ export default class MainView extends React.PureComponent
 								),
 						);
 
-						const image_ids = new Array(files.length);
-
-						await Promise.allSettled(convertFilesToImages(files, image_ids));
-
-						series.files = files;
+						const image_ids = (await Promise.allSettled(convertFilesToImages(files, image_ids))).map(promise => promise.value);
 
 						series.push(...image_ids);
 
@@ -435,11 +432,18 @@ export default class MainView extends React.PureComponent
 
 			try
 			{
-				const f = new File([ await getInstanceAPI(image_series[key].Instances[instance_index]) ], `${ image_series[key].Instances[instance_index] }.dcm`, { type: 'application/dicom' });
-				const i = await convertFilesToImages([ f ]);
-				await i[0];
-				// image_series[key].thumbnail = await getImageSrcFromImageId(image_series[key][instance_index]);
-				image_series[key].thumbnail = await getImageSrcFromImageId(f.image_id);
+				if (window.__CONFIG__.features?.includes('web'))
+				{
+					const file = new File([ await getInstanceAPI(image_series[key].Instances[instance_index]) ], `${ image_series[key].Instances[instance_index] }.dcm`, { type: 'application/dicom' });
+
+					const image_id = await convertFilesToImages([ file ])[0];
+
+					image_series[key].thumbnail = await getImageSrcFromImageId(image_id);
+				}
+				else
+				{
+					image_series[key].thumbnail = await getImageSrcFromImageId(image_series[key][instance_index]);
+				}
 			}
 			catch (_error)
 			{
@@ -452,9 +456,12 @@ export default class MainView extends React.PureComponent
 		const showSerie =
 			async serie =>
 			{
-				if (!image_series[serie].images_loaded)
+				if (window.__CONFIG__.features?.includes('web'))
 				{
-					await image_series[serie].loadImages();
+					if (!image_series[serie].images_loaded)
+					{
+						await image_series[serie].loadImages();
+					}
 				}
 
 				await this.showSerie(image_series[serie], `VOLUME${ study_index }`, viewport_inputs, study.segmentation, study_index)
@@ -606,6 +613,8 @@ export default class MainView extends React.PureComponent
 						{
 							const result = [];
 
+							const viewport_positions = [];
+
 							this.state.CONFIG.studies
 								.forEach
 								(
@@ -623,189 +632,380 @@ export default class MainView extends React.PureComponent
 
 													const viewport_id = `_${ study_index }-${ viewport.type }-${ viewport.orientation }-${ viewport.position }`;
 
-													if (viewport.type === 'ORTHOGRAPHIC')
-													{
-														result.push
-														(
-															<div
-																className="viewport_grid-canvas_panel-item"
-																id={viewport_id}
-																style=
-																{{
-																	zIndex: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? '3' : '2',
-																	width: viewport.width || `${ 100 / this.state.CONFIG.layout.width }%`,
-																	height: viewport.height || `${ 100 / this.state.CONFIG.layout.height }%`,
-																	left: viewport.left || `${ viewport.position % this.state.CONFIG.layout.width / this.state.CONFIG.layout.width * 100 }%`,
-																	top: viewport.top || `${ Math.floor(viewport.position / this.state.CONFIG.layout.width) * (1 / this.state.CONFIG.layout.height) * 100 }%`
-																}}>
-																{
-																	viewport_index !== 0 ?
+													viewport_positions[viewport.position] = viewport_id;
 
-																		null :
+													result.push
+													(
+														<div
+															className="viewport_grid-canvas_panel-item"
+															id={viewport_id}
+															style=
+															{{
+																position: 'absolute',
+																// zIndex: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? '3' : '2',
+																zIndex: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? '3' : '2',
+																width: viewport.width || `${ 100 / this.state.CONFIG.layout.width }%`,
+																height: viewport.height || `${ 100 / this.state.CONFIG.layout.height }%`,
+																left: viewport.left || `${ viewport.position % this.state.CONFIG.layout.width / this.state.CONFIG.layout.width * 100 }%`,
+																top: viewport.top || `${ Math.floor(viewport.position / this.state.CONFIG.layout.width) * (1 / this.state.CONFIG.layout.height) * 100 }%`
+															}}
+														>
+															{
+																viewport_index !== 0 ?
 
-																		(
-																			!this.state[`imagesAreLoaded${ study_index }`] ?
+																	null :
 
-																				<div
-																					className="viewport_grid-canvas_panel-placeholder"
+																	(
+																		!this.state[`imagesAreLoaded${ study_index }`] ?
 
-																					style=
+																			<div
+																				className="viewport_grid-canvas_panel-placeholder"
+
+																				style=
+																					{
 																						{
-																							{
-																								display: this.state[`imagesAreLoaded${ study_index }`] ? 'none' : 'table',
-																								position: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ?  'fixed' : 'relative',
-																								height: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? 'calc(100% + 60px)' : 'initial',
-																								top: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? 0 : 'initial',
-																							}
+																							display: this.state[`imagesAreLoaded${ study_index }`] ? 'none' : 'table',
+																							position: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ?  'fixed' : 'relative',
+																							height: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? 'calc(100% + 60px)' : 'initial',
+																							top: viewport_index === 0 && this.state.CONFIG.studies.length === 1 ? 0 : 'initial',
 																						}
-
-																					// TODO: use react ref?
-																					// onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
-																				>
-																					{
-																						!study.hidePlaceholder ?
-																							<>
-																								{
-																									CONFIG.features?.includes('web') ?
-
-																										<>
-																											<div
-																												className="viewport_grid-canvas_panel-placeholder-inner"
-																												style={{ width: '100%' }}
-																												onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
-																											>
-																												<div className="viewport_grid-loader" />
-																											</div>
-																										</> :
-
-																										<>
-																											<div
-																												className="viewport_grid-canvas_panel-placeholder-inner"
-																												style={{ width: '50%' }}
-																												onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
-																											>
-																												<span>{locale['Click to load files'][window.__LANG__]}</span>
-																											</div>
-
-																											<div
-																												className="viewport_grid-canvas_panel-placeholder-inner"
-																												style={{ width: '50%', backgroundColor: 'rgba(0, 0, 0, 0.0625)' }}
-																												onClick={() => document.querySelector(`#data-input-dir-${ study_index }`).click()}
-																											>
-																												<span>{locale['Click to load directories'][window.__LANG__]}</span>
-																											</div>
-																										</>
-																								}
-																							</>
-
-																							: null
 																					}
 
-																					{
-																						this.state[`modal${ study_index }`] && !this.state[`loading${ study_index }`] ?
+																				// TODO: use react ref?
+																				// onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
+																			>
+																				{
+																					!study.hidePlaceholder ?
+																						<>
+																							{
+																								CONFIG.features?.includes('web') ?
 
-																							<div className="viewport_grid-modal">
-																								<div style={{ height: '100%' }}>
-																									<div className="viewport_grid-modal-inner" style={{ width: '50%', height: 'calc(100% - 60px)', display: 'inline-block', borderRight: '1px solid white' }}>
-																										{
-																											Object.keys(this.state[`image_series${ study_index }`])
-																												.map
-																												(
-																													key =>
-																														<a
-																															className={`-_2`}
-																															key={key}
-																															style={{ display: 'inline-block' }}
+																									<>
+																										<div
+																											className="viewport_grid-canvas_panel-placeholder-inner"
+																											style={{ width: '100%' }}
+																											onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
+																										>
+																											<div className="viewport_grid-loader" />
+																										</div>
+																									</> :
 
-																															onClick={async evt =>
-																															{
-																																evt.stopPropagation();
+																									<>
+																										<div
+																											className="viewport_grid-canvas_panel-placeholder-inner"
+																											style={{ width: '50%' }}
+																											onClick={() => document.querySelector(`#data-input${ study_index }`).click()}
+																										>
+																											<span>{locale['Click to load files'][window.__LANG__]}</span>
+																										</div>
 
-																																this.setState({ [ `loading${ study_index }` ]: true });
+																										<div
+																											className="viewport_grid-canvas_panel-placeholder-inner"
+																											style={{ width: '50%', backgroundColor: 'rgba(0, 0, 0, 0.0625)' }}
+																											onClick={() => document.querySelector(`#data-input-dir-${ study_index }`).click()}
+																										>
+																											<span>{locale['Click to load directories'][window.__LANG__]}</span>
+																										</div>
+																									</>
+																							}
+																						</>
 
-																																await this.state[`showSerie${ study_index }`](key);
+																						: null
+																				}
 
-																																this.setState({ [ `modal${ study_index }` ]: false, [ `imagesAreLoaded${ study_index }` ]: true, [ `loading${ study_index }` ]: false });
-																															}}
-																														>
-																															<div style={{ padding: '10px', overflow: 'hidden' }}>
-																																<img src={this.state[`image_series${ study_index }`][key].thumbnail} />
-																																{/* <div>Series ID: {this.state[`image_series${ study_index }`][key].series_id}</div> */}
-																																<div>{locale['Protocol name'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].protocol_name}</div>
-																																<div>{locale['Modality'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].modality}</div>
-																																<div>{locale['Series description'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].series_description}</div>
-																																<div>{locale['Instance number'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].Instances.length}</div>
-																															</div>
-																														</a>,
-																												)
-																										}
-																									</div>
+																				{
+																					this.state[`modal${ study_index }`] && !this.state[`loading${ study_index }`] ?
 
-																									<div style={{ width: '50%', display: 'inline-block', textAlign: 'center' }}>
-																										{/* {locale['Description'][window.__LANG__]} */}
+																						<div className="viewport_grid-modal">
+																							<div style={{ height: '100%' }}>
+																								<div className="viewport_grid-modal-inner" style={{ width: '50%', height: 'calc(100% - 60px)', display: 'inline-block', borderRight: '1px solid white' }}>
+																									{
+																										Object.keys(this.state[`image_series${ study_index }`])
+																											.map
+																											(
+																												key =>
+																													<a
+																														className={`-_2`}
+																														key={key}
+																														style={{ display: 'inline-block' }}
 
-																										<p style={{ color: window.__phase1__ ? 'green' : 'white' }}>{ window.__phase1__ ? <span style={{ color: 'green' }}>✓ </span> : null }Выберите артериальную фазу </p>
-																										<p style={{ color: window.__phase1__ ? 'green' : 'white' }}>{ window.__phase1__ ? <span style={{ color: 'green' }}>✓ </span> : null }Проведите разметку</p>
-																										<p>Выберите портальную фазу</p>
-																										<p>Проведите разметку и отправьте в ИИ сервис</p>
-																									</div>
+																														onClick={async evt =>
+																														{
+																															evt.stopPropagation();
+
+																															this.setState({ [ `loading${ study_index }` ]: true });
+
+																															await this.state[`showSerie${ study_index }`](key);
+
+																															this.setState({ [ `modal${ study_index }` ]: false, [ `imagesAreLoaded${ study_index }` ]: true, [ `loading${ study_index }` ]: false });
+																														}}
+																													>
+																														<div style={{ padding: '10px', overflow: 'hidden' }}>
+																															<img src={this.state[`image_series${ study_index }`][key].thumbnail} />
+																															{/* <div>Series ID: {this.state[`image_series${ study_index }`][key].series_id}</div> */}
+																															<div>{locale['Protocol name'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].protocol_name}</div>
+																															<div>{locale['Modality'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].modality}</div>
+																															<div>{locale['Series description'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].series_description}</div>
+																															<div>{locale['Instance number'][window.__LANG__]}: {this.state[`image_series${ study_index }`][key].length}</div>
+																														</div>
+																													</a>,
+																											)
+																									}
 																								</div>
-																							</div> :
 
-																							null
-																					}
-																				</div> :
+																								<div style={{ width: '50%', display: 'inline-block', textAlign: 'center', display: 'none' }}>
+																									{/* {locale['Description'][window.__LANG__]} */}
 
-																				null
-																		)
-																}
+																									<p style={{ color: window.__phase1__ ? 'green' : 'white' }}>{ window.__phase1__ ? <span style={{ color: 'green' }}>✓ </span> : null }Выберите артериальную фазу </p>
+																									<p style={{ color: window.__phase1__ ? 'green' : 'white' }}>{ window.__phase1__ ? <span style={{ color: 'green' }}>✓ </span> : null }Проведите разметку</p>
+																									<p>Выберите портальную фазу</p>
+																									<p>Проведите разметку и отправьте в ИИ сервис</p>
+																								</div>
+																							</div>
+																						</div> :
 
+																						null
+																				}
+																			</div> :
+
+																			null
+																	)
+															}
+
+															{
+																!CONFIG.features?.includes('web') ?
+
+																	<>
+																		<input
+																			type="file"
+																			id={`data-input${ study_index }`}
+																			style={{ display: 'none' }}
+																			// accept=".dcm"
+
+																			multiple
+
+																			onChange={({ target }) => this.startApp(target.files, study_index, study)}
+																		/>
+
+																		<input
+																			type="file"
+																			webkitdirectory=""
+																			id={`data-input-dir-${ study_index }`}
+																			style={{ display: 'none' }}
+																			// accept=".dcm"
+
+																			multiple
+
+																			onChange={({ target }) => this.startApp(target.files, study_index, study)}
+																		/>
+																	</> :
+
+																	null
+															}
+
+															{Math.floor(viewport.position / this.state.CONFIG.layout.width) < this.state.CONFIG.layout.height - 1 && (
+															<div
+																style={{ position: 'absolute', bottom: -5, right: 0, width: '100%', height: '10px', backgroundColor: 'transparent', zIndex: 2, cursor: 'ns-resize' }}
+
+																onMouseDown={() =>
 																{
-																	!CONFIG.features?.includes('web') ?
+																	const horizontal_line_position = Math.floor(viewport.position / this.state.CONFIG.layout.width);
 
-																		<>
-																			<input
-																				type="file"
-																				id={`data-input${ study_index }`}
-																				style={{ display: 'none' }}
-																				// accept=".dcm"
+																	window.viewports_to_move_top = [];
+																	window.viewports_to_move_bottom = [];
 
-																				multiple
+																	for (let w = 0; w < this.state.CONFIG.layout.width; ++w)
+																	{
+																		window.viewports_to_move_top.push(viewport_positions[(horizontal_line_position * this.state.CONFIG.layout.width) + w]);
+																		window.viewports_to_move_bottom.push(viewport_positions[(horizontal_line_position * this.state.CONFIG.layout.width) + this.state.CONFIG.layout.width + w]);
+																	}
 
-																				onChange={({ target }) => this.startApp(target.files, study_index, study)}
-																			/>
+																	const mouse_move_handler = (evt) =>
+																	{
+																		const rendering_engine = cornerstone.getRenderingEngine('CORNERSTONE_RENDERING_ENGINE');
 
-																			<input
-																				type="file"
-																				webkitdirectory=""
-																				id={`data-input-dir-${ study_index }`}
-																				style={{ display: 'none' }}
-																				// accept=".dcm"
+																		window.viewports_to_move_top
+																			.forEach
+																			(
+																				viewport_to_move =>
+																				{
+																					const element = rendering_engine.getViewport(viewport_to_move).element.closest('.viewport_grid-canvas_panel-item');
 
-																				multiple
+																					const current_height = parseFloat(window.getComputedStyle(element).height) || 0;
 
-																				onChange={({ target }) => this.startApp(target.files, study_index, study)}
-																			/>
-																		</> :
+																					const new_height = current_height + evt.movementY;
 
-																		null
-																}
-															</div>
-														);
-													}
-													else
-													{
-														result.push
-														(
-															<div className="viewport_grid-canvas_panel-item" id="3D" style={{ width: `${ 100 / this.state.CONFIG.layout.width }%`, height: `${ 100 / this.state.CONFIG.layout.height }%`, left: `${ viewport.position % this.state.CONFIG.layout.width / this.state.CONFIG.layout.width * 100 }%`, top: `${ Math.floor(viewport.position / this.state.CONFIG.layout.width) * (1 / CONFIG.layout.height) * 100 }%` }}>
-																{ main_study ? <div className="viewport_grid-canvas_panel-item-inner" id="mesh" style={{ zIndex: 1 - this.state.item4_toggle }}/> : null }
+																					element.style.height = new_height + 'px';
+																				}
+																			);
 
-																<div className="viewport_grid-canvas_panel-item-inner" id={viewport_id} style={{ zIndex: this.state.item4_toggle }} />
+																		window.viewports_to_move_bottom
+																			.forEach
+																			(
+																				viewport_to_move =>
+																				{
+																					const element = rendering_engine.getViewport(viewport_to_move).element.closest('.viewport_grid-canvas_panel-item');
 
-																{ main_study && this.state[`imagesAreLoaded${ study_index }`] ? <div className="input-element -button" style={{ position: 'absolute', bottom: 4, right: 4, zIndex: 1, color: 'white', cursor: 'pointer' }} onClick={() => this.setState({item4_toggle: !this.state.item4_toggle})}>{ this.state.item4_toggle ? locale['Volume'][window.__LANG__] : locale['3D'][window.__LANG__] }</div> : null }
-															</div>
-														);
-													}
+																					const current_height = parseFloat(window.getComputedStyle(element).height) || 0;
+
+																					const new_height = current_height - evt.movementY;
+
+																					element.style.height = new_height + 'px';
+
+																					const current_top = parseFloat(window.getComputedStyle(element).top) || 0;
+
+																					const new_top = current_top + evt.movementY;
+
+																					element.style.top = new_top + 'px';
+																				}
+																			);
+
+																		rendering_engine.resize();
+																	};
+
+																	window.addEventListener('mousemove', mouse_move_handler);
+																	window.addEventListener('mouseup', () => window.removeEventListener('mousemove', mouse_move_handler));
+																}}
+															/>
+															)}
+
+															{(viewport.position % this.state.CONFIG.layout.width) < this.state.CONFIG.layout.width - 1 && (
+															<div
+																style={{ position: 'absolute', bottom: 0, right: -5, width: '10px', height: '100%', backgroundColor: 'transparent', zIndex: 2, cursor: 'ew-resize' }}
+
+																onMouseDown={() =>
+																{
+																	const vertical_line_position = viewport.position % this.state.CONFIG.layout.width;
+
+																	window.viewports_to_move_left = [];
+																	window.viewports_to_move_right = [];
+
+																	for (let h = 0; h < this.state.CONFIG.layout.height; ++h)
+																	{
+																		window.viewports_to_move_left.push(viewport_positions[vertical_line_position + (h * this.state.CONFIG.layout.width)]);
+																		window.viewports_to_move_right.push(viewport_positions[vertical_line_position + (h * this.state.CONFIG.layout.width) + 1]);
+																	}
+
+																	const mouse_move_handler = (evt) =>
+																	{
+																		const rendering_engine = cornerstone.getRenderingEngine('CORNERSTONE_RENDERING_ENGINE');
+
+																		window.viewports_to_move_left
+																			.forEach
+																			(
+																				viewport_to_move =>
+																				{
+																					const element = rendering_engine.getViewport(viewport_to_move).element.closest('.viewport_grid-canvas_panel-item');
+
+																					const current_width = parseFloat(window.getComputedStyle(element).width) || 0;
+
+																					const new_width = current_width + evt.movementX;
+
+																					element.style.width = new_width + 'px';
+																				}
+																			);
+
+																		window.viewports_to_move_right
+																			.forEach
+																			(
+																				viewport_to_move =>
+																				{
+																					const element = rendering_engine.getViewport(viewport_to_move).element.closest('.viewport_grid-canvas_panel-item');
+
+																					const current_width = parseFloat(window.getComputedStyle(element).width) || 0;
+
+																					const new_width = current_width - evt.movementX;
+
+																					element.style.width = new_width + 'px';
+
+																					const current_left = parseFloat(window.getComputedStyle(element).left) || 0;
+
+																					const new_left = current_left + evt.movementX;
+
+																					element.style.left = new_left + 'px';
+																				}
+																			);
+
+																		rendering_engine.resize();
+																	};
+
+																	window.addEventListener('mousemove', mouse_move_handler);
+																	window.addEventListener('mouseup', () => window.removeEventListener('mousemove', mouse_move_handler));
+																}}
+															/>
+															)}
+
+															{Math.floor(viewport.position / this.state.CONFIG.layout.width) < this.state.CONFIG.layout.height - 1 && (viewport.position % this.state.CONFIG.layout.width) < this.state.CONFIG.layout.width - 1 && (
+															<div
+																className="viewport_grid-canvas_panel-item-resize-handle-center"
+																style={{ position: 'absolute', bottom: -5, right: -5, width: '10px', height: '10px', backgroundColor: 'transparent', zIndex: 2, cursor: 'nwse-resize' }}
+																onMouseDown={() =>
+																{
+																	const horizontal_line_position = Math.floor(viewport.position / this.state.CONFIG.layout.width);
+																	const vertical_line_position = viewport.position % this.state.CONFIG.layout.width;
+
+																	window.viewports_to_move_top = [];
+																	window.viewports_to_move_bottom = [];
+																	for (let w = 0; w < this.state.CONFIG.layout.width; ++w)
+																	{
+																		window.viewports_to_move_top.push(viewport_positions[(horizontal_line_position * this.state.CONFIG.layout.width) + w]);
+																		window.viewports_to_move_bottom.push(viewport_positions[(horizontal_line_position * this.state.CONFIG.layout.width) + this.state.CONFIG.layout.width + w]);
+																	}
+
+																	window.viewports_to_move_left = [];
+																	window.viewports_to_move_right = [];
+																	for (let h = 0; h < this.state.CONFIG.layout.height; ++h)
+																	{
+																		window.viewports_to_move_left.push(viewport_positions[vertical_line_position + (h * this.state.CONFIG.layout.width)]);
+																		window.viewports_to_move_right.push(viewport_positions[vertical_line_position + (h * this.state.CONFIG.layout.width) + 1]);
+																	}
+
+																	const mouse_move_handler = (evt) =>
+																	{
+																		const rendering_engine = cornerstone.getRenderingEngine('CORNERSTONE_RENDERING_ENGINE');
+
+																		// Vertical: move horizontal line (same as bottom bar)
+																		window.viewports_to_move_top.forEach((viewport_to_move) =>
+																		{
+																			const element = rendering_engine.getViewport(viewport_to_move).element.closest('.viewport_grid-canvas_panel-item');
+																			const current_height = parseFloat(window.getComputedStyle(element).height) || 0;
+																			element.style.height = (current_height + evt.movementY) + 'px';
+																		});
+																		window.viewports_to_move_bottom.forEach((viewport_to_move) =>
+																		{
+																			const element = rendering_engine.getViewport(viewport_to_move).element.closest('.viewport_grid-canvas_panel-item');
+																			const current_height = parseFloat(window.getComputedStyle(element).height) || 0;
+																			const current_top = parseFloat(window.getComputedStyle(element).top) || 0;
+																			element.style.height = (current_height - evt.movementY) + 'px';
+																			element.style.top = (current_top + evt.movementY) + 'px';
+																		});
+
+																		// Horizontal: move vertical line (same as right bar)
+																		window.viewports_to_move_left.forEach((viewport_to_move) =>
+																		{
+																			const element = rendering_engine.getViewport(viewport_to_move).element.closest('.viewport_grid-canvas_panel-item');
+																			const current_width = parseFloat(window.getComputedStyle(element).width) || 0;
+																			element.style.width = (current_width + evt.movementX) + 'px';
+																		});
+																		window.viewports_to_move_right.forEach((viewport_to_move) =>
+																		{
+																			const element = rendering_engine.getViewport(viewport_to_move).element.closest('.viewport_grid-canvas_panel-item');
+																			const current_width = parseFloat(window.getComputedStyle(element).width) || 0;
+																			const current_left = parseFloat(window.getComputedStyle(element).left) || 0;
+																			element.style.width = (current_width - evt.movementX) + 'px';
+																			element.style.left = (current_left + evt.movementX) + 'px';
+																		});
+
+																		rendering_engine.resize();
+																	};
+
+																	window.addEventListener('mousemove', mouse_move_handler);
+																	window.addEventListener('mouseup', () => window.removeEventListener('mousemove', mouse_move_handler));
+																}}
+															/>
+															)}
+														</div>
+													);
 												},
 											);
 									},

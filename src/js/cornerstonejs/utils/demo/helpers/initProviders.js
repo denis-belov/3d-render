@@ -233,8 +233,6 @@ export default function initProviders ()
 				return {};
 			}
 
-			// LOG('initProviders imageId', imageId)
-
 			const instance = WADORSHeaderProvider.get('instance', imageId);
 
 			if (!instance)

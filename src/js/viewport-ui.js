@@ -1,18 +1,18 @@
-import * as THREE from 'three';
-import { OrbitControls as THREE_OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
-import { STLExporter as THREE_STLExporter } from 'three/examples/jsm/exporters/STLExporter';
-
-// Volume rendering
 import '@kitware/vtk.js/Rendering/Profiles/Volume';
 import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
 import vtkColorMaps from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/ColorMaps';
 
 import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
+import { getWebWorkerManager, cache } from '@cornerstonejs/core';
 
 import JSZip from 'jszip';
 
 import locale from '../locale.json';
+import { addContourLineActorsToViewport, removeContourLineActorsFromViewport } from './contourLinesAsVtk';
+
+/** viewportId -> Map(sliceIndex -> polyDataResults) for VTK contour lines per slice */
+const vtkContourLinesCache = new Map();
 
 
 
@@ -245,6 +245,194 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
   }
 
   viewport_input.element.appendChild(slider_container);
+
+  // if (_this.volume_segm)
+  {
+    const vtkLinesSection = document.createElement('div');
+    vtkLinesSection.style.position = 'absolute';
+    vtkLinesSection.style.left = '12px';
+    vtkLinesSection.style.top = '4px';
+    vtkLinesSection.style.zIndex = '10';
+    const vtkLinesBtn = document.createElement('button');
+    vtkLinesBtn.type = 'button';
+    vtkLinesBtn.className = 'input-element -button';
+    vtkLinesBtn.textContent = 'VTK contour lines';
+    vtkLinesBtn.style.fontSize = '11px';
+    vtkLinesBtn.style.padding = '2px 6px';
+    vtkLinesBtn.title = 'Toggle VTK contour lines on this viewport';
+    const stopDrawing = (evt) => {
+      evt.stopPropagation();
+      evt.stopImmediatePropagation();
+      evt.preventDefault();
+    };
+    vtkLinesBtn.addEventListener('mousedown', stopDrawing);
+    vtkLinesBtn.addEventListener('mouseup', stopDrawing);
+    vtkLinesBtn.addEventListener('pointerdown', stopDrawing);
+    vtkLinesBtn.addEventListener('pointerup', stopDrawing);
+
+    const setVtkLinesButtonState = (on) => {
+      viewport.__vtkContourLinesVisible = on;
+      vtkLinesBtn.textContent = on ? 'VTK contour lines ✓' : 'VTK contour lines';
+      vtkLinesBtn.classList.toggle('-active', on);
+    };
+
+    vtkLinesBtn.addEventListener('click', async evt =>
+    {
+      evt.preventDefault();
+      evt.stopPropagation();
+      evt.stopImmediatePropagation();
+      const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      const viewportId = viewport_input.viewportId;
+
+      if (viewport.__vtkContourLinesVisible) {
+        if (viewport.__vtkContourLinesOnSliceChange) {
+          viewport_input.element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, viewport.__vtkContourLinesOnSliceChange);
+          viewport.__vtkContourLinesOnSliceChange = null;
+        }
+        removeContourLineActorsFromViewport(viewport);
+        setVtkLinesButtonState(false);
+        _this.renderingEngine.renderViewports([viewportId]);
+        return;
+      }
+
+      const planesInfo = viewport.getSlicesClippingPlanes?.();
+      if (!planesInfo?.length) return;
+      const segmentation = cornerstoneTools.segmentation.state.getSegmentation(_this.volume_segm.volumeId);
+      if (!segmentation?.representationData?.Surface?.geometryIds) return;
+      const surfacesInfo = [];
+      segmentation.representationData.Surface.geometryIds.forEach((geometryId, segmentIndex) =>
+      {
+        const surface = cache.getGeometry(geometryId)?.data;
+        if (surface?.points?.length) surfacesInfo.push({ id: geometryId, points: surface.points, polys: surface.polys, segmentIndex });
+      });
+      if (!surfacesInfo.length) return;
+      const workerManager = getWebWorkerManager();
+      let surfacesAABB = new Map();
+      try
+      {
+        const aabbResult = await workerManager.executeTask('polySeg', 'getSurfacesAABBs', { surfacesInfo });
+        surfacesAABB = Array.isArray(aabbResult) ? new Map(aabbResult) : aabbResult;
+      }
+      catch (e) { console.warn('getSurfacesAABBs', e); }
+      const currentSliceIndex = viewport.getSliceIndex();
+      const sortedPlanes = [...planesInfo].sort((a, b) => Math.abs(a.sliceIndex - currentSliceIndex) - Math.abs(b.sliceIndex - currentSliceIndex));
+      if (!vtkContourLinesCache.has(viewport.id)) vtkContourLinesCache.set(viewport.id, new Map());
+      const sliceCache = vtkContourLinesCache.get(viewport.id);
+      const getSegmentColor = (segmentIndex) =>
+      {
+        const c = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, _this.volume_segm.volumeId, segmentIndex);
+        return c ? [c[0], c[1], c[2]] : [255, 255, 255];
+      };
+      const contourLineOptions = _this.vertexColorsEnabled
+        ? { getPointColors: (points) => _this.getVertexColorsForWorldPoints(points) }
+        : { getSegmentColor };
+      const showLinesForSlice = (data) =>
+      {
+        if (!data?.size) return;
+        addContourLineActorsToViewport(viewport, data, contourLineOptions);
+      };
+      await workerManager.executeTask('polySeg', 'cutSurfacesIntoPlanes', { surfacesInfo, planesInfo: sortedPlanes, surfacesAABB }, {
+        callbacks: [
+          () => {},
+          (cacheData) =>
+          {
+            const sliceIndex = cacheData.sliceIndex;
+            const polyDataResults = cacheData.polyDataResults;
+            const map = Array.isArray(polyDataResults) ? new Map(polyDataResults) : (polyDataResults instanceof Map ? polyDataResults : new Map());
+            sliceCache.set(sliceIndex, map);
+            if (Number(sliceIndex) === Number(currentSliceIndex) && map.size) {
+              showLinesForSlice(map);
+            }
+          },
+        ],
+      });
+      viewport.__vtkContourLinesCache = sliceCache;
+      let lastSliceIndex = currentSliceIndex;
+      const onSliceChange = () =>
+      {
+        const current = viewport.getSliceIndex();
+        if (current === lastSliceIndex) return;
+        lastSliceIndex = current;
+        const opts = _this.vertexColorsEnabled ? { getPointColors: (points) => _this.getVertexColorsForWorldPoints(points) } : { getSegmentColor };
+        const forSlice = sliceCache.get(current);
+        if (forSlice) {
+          addContourLineActorsToViewport(viewport, forSlice, opts);
+        }
+      };
+      viewport.__vtkContourLinesOnSliceChange = onSliceChange;
+      viewport_input.element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, onSliceChange);
+      viewport_input.element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, onSliceChange);
+      setVtkLinesButtonState(true);
+    });
+    vtkLinesSection.appendChild(vtkLinesBtn);
+
+    const labelmapSection = document.createElement('div');
+    labelmapSection.style.position = 'absolute';
+    labelmapSection.style.left = '12px';
+    labelmapSection.style.top = '28px';
+    labelmapSection.style.zIndex = '10';
+    const labelmapBtn = document.createElement('button');
+    labelmapBtn.type = 'button';
+    labelmapBtn.className = 'input-element -button';
+    labelmapBtn.textContent = 'Labelmap';
+    labelmapBtn.style.fontSize = '11px';
+    labelmapBtn.style.padding = '2px 6px';
+    labelmapBtn.title = 'Show/hide labelmap segmentation (VTK lines unaffected)';
+    const setLabelmapButtonState = (visible) => {
+      labelmapBtn.classList.toggle('-active', visible);
+    };
+    labelmapBtn.addEventListener('mousedown', stopDrawing);
+    labelmapBtn.addEventListener('mouseup', stopDrawing);
+    labelmapBtn.addEventListener('pointerdown', stopDrawing);
+    labelmapBtn.addEventListener('pointerup', stopDrawing);
+    setLabelmapButtonState(true);
+    const reapplyLabelmapVisibility = () =>
+    {
+      if (!_this.volume_segm) return;
+      const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      if (!viewport?.getActors) return;
+      const segmentationId = _this.volume_segm.volumeId;
+      const hidden = viewport.__labelmapHidden?.[segmentationId];
+      if (hidden === undefined) return;
+      const prefix = `${segmentationId}-Labelmap`;
+      const actors = viewport.getActors().filter(a => a.representationUID?.startsWith(prefix));
+      if (!actors.length) return;
+      actors.forEach(entry => entry.actor.setVisibility(!hidden));
+      _this.renderingEngine.renderViewports([viewport_input.viewportId]);
+    };
+    labelmapBtn.addEventListener('click', evt =>
+    {
+      evt.preventDefault();
+      evt.stopPropagation();
+      evt.stopImmediatePropagation();
+      if (!_this.volume_segm) return;
+      const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      if (!viewport?.getActors) return;
+      const segmentationId = _this.volume_segm.volumeId;
+      const prefix = `${segmentationId}-Labelmap`;
+      const actors = viewport.getActors().filter(a => a.representationUID?.startsWith(prefix));
+      if (!actors.length) return;
+      const visible = !actors[0].actor.getVisibility();
+      if (!viewport.__labelmapHidden) viewport.__labelmapHidden = {};
+      viewport.__labelmapHidden[segmentationId] = !visible;
+      actors.forEach(entry => entry.actor.setVisibility(visible));
+      setLabelmapButtonState(visible);
+      _this.renderingEngine.renderViewports([viewport_input.viewportId]);
+    });
+    const onLabelmapRerender = () =>
+    {
+      if (!_this.volume_segm) return;
+      const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      if (!viewport?.__labelmapHidden?.[_this.volume_segm.volumeId]) return;
+      setTimeout(reapplyLabelmapVisibility, 0);
+    };
+    viewport_input.element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, onLabelmapRerender);
+    viewport_input.element.addEventListener(cornerstone.Enums.Events.IMAGE_RENDERED, onLabelmapRerender);
+    labelmapSection.appendChild(labelmapBtn);
+
+    viewport_input.element.appendChild(vtkLinesSection);
+    viewport_input.element.appendChild(labelmapSection);
+  }
 
   if (viewport_input_index === 0)
   {
@@ -546,183 +734,19 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
 			save_markup_button.style.right = '20px';
 			save_markup_button.style.bottom = '10px';
 
-			viewport_input.element.appendChild(save_markup_button);
+			// viewport_input.element.appendChild(save_markup_button);
 		}
   }
 };
 
 export const getViewportUIVolume3D = (_this, viewport_input) =>
 {
-  // Mesh
-  if (viewport_input.element.parentNode.querySelector('#mesh'))
-  {
-    const container = viewport_input.element.parentNode.querySelector('#mesh');
-
-    _this.three_scene = new THREE.Scene();
-
-    _this.three_camera = new THREE.PerspectiveCamera(75, container.offsetWidth / container.offsetHeight, 0.1, 1000);
-    _this.three_camera.position.z = 100;
-
-    const point_light = new THREE.PointLight(0xffffff);
-
-    _this.three_camera.add(point_light);
-
-    const canvas = document.createElement('canvas');
-    container.appendChild(canvas);
-
-    _this.three_renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    _this.three_renderer.setSize(container.offsetWidth, container.offsetHeight);
-    _this.three_renderer.setClearColor(new THREE.Color(0.15, 0.22, 0.3));
-    _this.three_renderer.clear();
-
-    _this.three_orbit_controls = new THREE_OrbitControls(_this.three_camera, _this.three_renderer.domElement);
-    _this.three_orbit_controls.update();
-    _this.three_orbit_controls.addEventListener('change', () => _this.renderThreeScene());
-
-    _this.vertices = null;
-    _this.colors = null;
-    _this.indices = null;
-
-    // 'Open mesh': () => _this.updateMesh(true),
-    // 'Close mesh': () => _this.updateMesh(),
-
-    const actions = document.createElement('div');
-    actions.style.position = 'absolute';
-    actions.style.bottom = 0;
-    actions.style.left = 0;
-
-    const update_mesh = document.createElement('div');
-    update_mesh.className = 'input-element -button';
-    update_mesh.innerHTML = locale['Update'][window.__LANG__];
-    update_mesh.addEventListener('click', () => _this.doMarchingCubes());
-    actions.appendChild(update_mesh);
-
-    const center_three_scene = document.createElement('div');
-    center_three_scene.className = 'input-element -button';
-    center_three_scene.innerHTML = locale['Center'][window.__LANG__];
-    center_three_scene.addEventListener('click', () => _this.centerThreeScene());
-    actions.appendChild(center_three_scene);
-
-    const save_3d_scene = document.createElement('div');
-    save_3d_scene.className = 'input-element -button';
-    save_3d_scene.innerHTML = locale['Save'][window.__LANG__];
-    save_3d_scene.addEventListener('click', () => _this.saveScene());
-    actions.appendChild(save_3d_scene);
-
-    const download_stl_binary = document.createElement('div');
-    download_stl_binary.className = 'input-element -button';
-    download_stl_binary.innerHTML = `&#8595; ${locale['STL (binary)'][window.__LANG__]}`;
-    download_stl_binary.addEventListener('click', () => _this.downloadStlBinary());
-    actions.appendChild(download_stl_binary);
-
-    const download_stl_ascii = document.createElement('div');
-    download_stl_ascii.className = 'input-element -button';
-    download_stl_ascii.innerHTML = `&#8595; ${locale['STL (ASCII)'][window.__LANG__]}`;
-    download_stl_ascii.addEventListener('click', () => _this.downloadStlAscii());
-    actions.appendChild(download_stl_ascii);
-
-    container.appendChild(actions);
-
-    const settings = document.createElement('div');
-    settings.style.position = 'absolute';
-    settings.style.width = '200px';
-    settings.style.top = '0';
-    settings.style.left = '0';
-
-    container.appendChild(settings);
-
-
-
-    createRange
-    ({
-      container: settings,
-      min: 0,
-      max: 100,
-      step: 1,
-      value: _this.smoothing,
-      name: locale['Smoothing'][window.__LANG__],
-      callback: evt =>
-      {
-        _this.smoothing = parseFloat(evt.target.value);
-      },
-    });
-
-    createRange
-    ({
-      container: settings,
-      min: 0,
-      max: 1,
-      step: 0.01,
-      value: 0,
-      name: locale['Filtering'][window.__LANG__],
-      callback: evt =>
-      {
-        _this.setFiltering?.(evt.target.value);
-      },
-    });
-
-    createText
-    ({
-      container: settings,
-      value: 0,
-      name: locale['Volume'][window.__LANG__],
-    });
-
-    createText
-    ({
-      container: settings,
-      value: 0,
-      name: locale['Area'][window.__LANG__],
-    });
-
-    // {
-    //   const range_container = document.createElement('div');
-    //   const range = document.createElement('input');
-    //   const label = document.createElement('label');
-    //   const label2 = document.createElement('label');
-
-    //   // range.className = 'range-horizontal';
-    //   range.type = 'range';
-    //   range.min = 0;
-    //   range.max = 100;
-    //   range.step = 1;
-    //   range.value = 0;
-
-    //   label.style.color = 'white';
-
-    //   label.innerHTML = range.value;
-
-    //   label2.style.color = 'white';
-
-    //   label2.innerHTML = 'Smoothing: ';
-
-    //   range_container.style.display = 'block';
-    //   range_container.style.position = 'absolute';
-    //   range_container.style.top = 0;
-
-    //   _this.opacity = 0;
-
-    //   const input = evt =>
-    //   {
-    //     _this.smoothing = parseFloat(evt.target.value);
-    //   };
-
-    //   input({ target: { value: 0 } });
-
-    //   range.addEventListener('input', input);
-    //   range.addEventListener('mousedown', evt => evt.stopPropagation());
-
-    //   range_container.appendChild(range);
-    //   range_container.appendChild(label2);
-    //   range_container.appendChild(label);
-
-    //   container.appendChild(range_container);
-    // }
-  }
-
   // Volume
   {
     const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+
+    const canvas = viewport.getCanvas?.() ?? viewport.canvas;
+    if (canvas) canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
     const { actor } = viewport.getDefaultActor();
 
@@ -733,50 +757,6 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
 
     let ww = data_range[1] - data_range[0];
     let wl = ww / 2;
-
-    window.__segm = () =>
-    {
-			// this.volume_segm.volume_segm.voxelManager.getCompleteScalarDataArray();
-      const segmentIndex = cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(_this.volume_segm.volumeId);
-
-      const clipping_planes = mapper.getClippingPlanes();
-
-      for (let _i = 0; _i < _this.volume.dimensions[0]; ++_i)
-      {
-        for (let j = 0; j < _this.volume.dimensions[1]; ++j)
-        {
-          for (let k = 0; k < _this.volume.dimensions[2]; ++k)
-          {
-            const i = _this.ijkToLinear(_i, j, k);
-
-            const wc = _this.volume.imageData.indexToWorld([ _i, j, k ]);
-
-            if
-            (
-              _this.volume.scalarData[i] >= data_range[0] + ((data_range[1] - data_range[0]) * _this.opacity)
-
-              && (
-                wc[0] > clipping_planes[0].getOrigin()[0]
-                && wc[0] < clipping_planes[1].getOrigin()[0]
-                && wc[1] > clipping_planes[2].getOrigin()[1]
-                && wc[1] < clipping_planes[3].getOrigin()[1]
-                && wc[2] > clipping_planes[4].getOrigin()[2]
-                && wc[2] < clipping_planes[5].getOrigin()[2]
-              )
-            )
-            {
-              _this.volume_segm.scalarData[i] = segmentIndex;
-            }
-            else
-            {
-              _this.volume_segm.scalarData[i] = 0;
-            }
-          }
-        }
-      }
-
-      cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(_this.volume_segm.volumeId);
-    };
 
     // clipping planes
     {
@@ -819,7 +799,7 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
       clipping_plane_controls.style.position = 'absolute';
       clipping_plane_controls.style.width = '200px';
       clipping_plane_controls.style.left = 0;
-      clipping_plane_controls.style.bottom = 1;
+      clipping_plane_controls.style.bottom = '1px';
 
       mapper.getClippingPlanes()
         .forEach
@@ -952,6 +932,40 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
     }
 
     {
+      const centerlineBtn = document.createElement('button');
+      centerlineBtn.type = 'button';
+      centerlineBtn.className = 'input-element -button';
+      centerlineBtn.textContent = 'Centerline';
+      centerlineBtn.style.fontSize = '11px';
+      centerlineBtn.style.padding = '2px 6px';
+      centerlineBtn.style.marginTop = '2px';
+      centerlineBtn.title = 'Compute and show centerline of active segmentation (Dijkstra)';
+      centerlineBtn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        _this.computeAndShowCenterline();
+      });
+      controls.appendChild(centerlineBtn);
+    }
+
+    {
+      const statsBtn = document.createElement('button');
+      statsBtn.type = 'button';
+      statsBtn.className = 'input-element -button';
+      statsBtn.textContent = 'Segmentation stats';
+      statsBtn.style.fontSize = '11px';
+      statsBtn.style.padding = '2px 6px';
+      statsBtn.style.marginTop = '2px';
+      statsBtn.title = 'Show red/blue triangle areas and segmentation volume';
+      statsBtn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (_this.showSegmentationStatsPopup) _this.showSegmentationStatsPopup();
+      });
+      controls.appendChild(statsBtn);
+    }
+
+    {
       createRange
       ({
         container: controls,
@@ -992,30 +1006,293 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
         },
       });
 
-      const a = document.createElement('a');
+    {
+      createRange
+      ({
+        container: controls,
+        min: 0,
+        max: 1,
+        step: 0.01,
+        value: 1,
+        name: (locale['Surface opacity'] && locale['Surface opacity'][window.__LANG__]) || 'Surface opacity',
+        callback: (evt, { range, label }) =>
+        {
+          const opacity = parseFloat(evt.target.value);
+          const segmentationId = _this.volume_segm?.volumeId;
+          if (!segmentationId) return;
+          const prefix = `${segmentationId}-Surface`;
+          const actors = viewport.getActors().filter(a => a.representationUID?.startsWith(prefix));
+          actors.forEach(entry => entry.actor.getProperty().setOpacity(opacity));
+          label.innerHTML = range.value;
+          viewport.render();
+        },
+      });
+    }
 
-      a.className = 'input-element -button';
-      a.innerHTML = locale['Segment with opacity'][window.__LANG__];
-      a.addEventListener('click', () => window.__segm());
+			{
+				const a = document.createElement('a');
 
-      // a.style.color = 'white';
-      // a.style.cursor = 'pointer';
+				a.className = 'input-element -button';
+				a.innerHTML = locale['Only 3D'][window.__LANG__];
+				a.addEventListener
+				(
+					'click',
 
-      // a.style.display = 'block';
-      // a.style.posiiton = 'relative';
-      // a.style.width = 'fit-content';
-      // a.style.height = '20px';
-      // a.style.marginTop = '1px';
-      // a.style.paddingLeft = '2px';
-      // a.style.paddingRight = '2px';
-      // a.style.border = '1px solid grey';
-      // a.style.fontSize = '12px';
-      // a.style.lineHeight = '20px';
-      // a.style.cursor = 'pointer';
-      // a.style.backgroundColor = 'grey';
-      // a.style.opacity = '0.5';
+					() =>
+					{
+						_this.toggleVolumeActor();
+					},
+				);
 
-      controls.appendChild(a);
+				controls.appendChild(a);
+			}
+
+			// Custom dual-thumb range: vertical rect thumbs, no overlay, independent. Left value = right edge of left thumb, right value = left edge of right thumb.
+			{
+				const cfg = { min: 0, max: 4, step: 0.01 };
+				const getRange = () => cfg.max - cfg.min;
+				const THUMB_W_PX = 10;
+				const THUMB_H_PX = 28;
+
+				let leftVal = typeof _this.blue_red1 === 'number' ? _this.blue_red1 : 1.2;
+				let rightVal = typeof _this.blue_red2 === 'number' ? _this.blue_red2 : 1.32;
+				const clampAndSnap = () =>
+				{
+					const step = cfg.step;
+					const r = getRange();
+					leftVal = Math.max(cfg.min, Math.min(cfg.max, Math.round(leftVal / step) * step));
+					rightVal = Math.max(cfg.min, Math.min(cfg.max, Math.round(rightVal / step) * step));
+					if (leftVal > rightVal) rightVal = leftVal;
+				};
+				clampAndSnap();
+				_this.blue_red1 = leftVal;
+				_this.blue_red2 = rightVal;
+
+				const box = document.createElement('div');
+				box.style.cssText = 'position:absolute;top:0;right:0;width:200px;padding:10px;z-index:10;box-sizing:border-box;font-size:12px;';
+				viewport.element.appendChild(box);
+
+				const track = document.createElement('div');
+				track.style.cssText = 'position:relative;height:20px;border-radius:4px;cursor:pointer;';
+				box.appendChild(track);
+
+				const leftThumb = document.createElement('div');
+				leftThumb.style.cssText = `position:absolute;top:50%;width:${THUMB_W_PX}px;height:${THUMB_H_PX}px;margin-top:${-THUMB_H_PX/2}px;border-radius:4px;background:#333;cursor:grab;border:1px solid #fff;box-sizing:border-box;z-index:2;touch-action:none;`;
+				track.appendChild(leftThumb);
+
+				const rightThumb = document.createElement('div');
+				rightThumb.style.cssText = `position:absolute;top:50%;width:${THUMB_W_PX}px;height:${THUMB_H_PX}px;margin-top:${-THUMB_H_PX/2}px;border-radius:4px;background:#333;cursor:grab;border:1px solid #fff;box-sizing:border-box;z-index:2;touch-action:none;`;
+				track.appendChild(rightThumb);
+
+				const labelsRow = document.createElement('div');
+				labelsRow.style.cssText = 'display:flex;justify-content:space-between;width:100%;margin-top:4px;';
+				box.appendChild(labelsRow);
+
+				const leftLabel = document.createElement('span');
+				leftLabel.style.cssText = 'color:#fff;';
+				labelsRow.appendChild(leftLabel);
+
+				const rightLabel = document.createElement('span');
+				rightLabel.style.cssText = 'color:#fff;';
+				labelsRow.appendChild(rightLabel);
+
+				function calculateMaskedStats (intensities, mask)
+				{
+					let sum = 0;
+					let count = 0;
+					const segmentedValues = [];
+
+					// Step 1: Filter intensities by mask and calculate sum for Mean
+					for (let i = 0; i < intensities.length; i++)
+					{
+						if (mask[i] !== 0)
+						{
+							sum += intensities[i];
+							segmentedValues.push(intensities[i]);
+							++count;
+						}
+					}
+
+					if (count === 0) return { mean: 0, stdDev: 0 };
+
+					const mean = sum / count;
+
+					// Step 2: Calculate Variance for Standard Deviation
+					const squareDiffsSum = segmentedValues.reduce((acc, val) => {
+							const diff = val - mean;
+							return acc + (diff * diff);
+					}, 0);
+
+					const variance = squareDiffsSum / count;
+					const stdDev = Math.sqrt(variance);
+
+					let min = Infinity;
+					let max = -Infinity;
+
+					for (let i = 0; i < intensities.length; i++)
+					{
+						min = Math.min(min, intensities[i] / mean);
+						max = Math.max(max, intensities[i] / mean);
+					}
+
+					return { mean, stdDev, min, max };
+				}
+
+				window.__test111__ = () =>
+				{
+					const stats = calculateMaskedStats(_this.volume.voxelManager.getCompleteScalarDataArray(), _this.volume_segm.voxelManager.getCompleteScalarDataArray());
+
+					cfg.min = stats.min;
+					cfg.max = stats.max;
+					cfg.step = 0.01;
+					const step = cfg.step;
+					leftVal = Math.round(1.2 / step) * step;
+					rightVal = Math.round(1.32 / step) * step;
+					_this.blue_red1 = leftVal;
+					_this.blue_red2 = rightVal;
+					clampAndSnap();
+					setGradient();
+					setThumbPositions();
+					setLabels();
+					notify();
+				};
+
+				const setGradient = () =>
+				{
+					const range = getRange();
+					const p1 = range > 0 ? ((leftVal - cfg.min) / range) * 100 : 0;
+					const p2 = range > 0 ? ((rightVal - cfg.min) / range) * 100 : 100;
+					track.style.background = `linear-gradient(to right, #2288ff 0%, #2288ff ${p1}%, #fff ${p1}%, #fff ${p2}%, #ee4444 ${p2}%, #ee4444 100%)`;
+				};
+				const setThumbPositions = () =>
+				{
+					const w = track.getBoundingClientRect().width;
+					const range = getRange();
+					if (w <= 0 || range <= 0) return;
+					const leftEdgePx = (leftVal - cfg.min) / range * w - THUMB_W_PX;
+					const rightEdgePx = (rightVal - cfg.min) / range * w;
+					leftThumb.style.left = `${Math.max(0, leftEdgePx)}px`;
+					rightThumb.style.left = `${Math.min(w - THUMB_W_PX, rightEdgePx)}px`;
+					leftThumb.style.marginLeft = '0';
+					rightThumb.style.marginLeft = '0';
+				};
+				const setLabels = () =>
+				{
+					leftLabel.textContent = leftVal.toFixed(2);
+					rightLabel.textContent = rightVal.toFixed(2);
+				};
+				const notify = () =>
+				{
+					_this.blue_red1 = leftVal;
+					_this.blue_red2 = rightVal;
+					if (_this.vertexColorsEnabled) _this.applyVertexColors(_this.blue_red1, _this.blue_red2);
+					viewport.render();
+				};
+
+				const xToValue = (clientX) =>
+				{
+					const rect = track.getBoundingClientRect();
+					const range = getRange();
+					const x = clientX - rect.left;
+					const t = Math.max(0, Math.min(1, x / rect.width));
+					const v = cfg.min + t * range;
+					return Math.round(v / cfg.step) * cfg.step;
+				};
+				setGradient();
+				setThumbPositions();
+				setLabels();
+
+				const updateRangeParams = (min, max, step) =>
+				{
+					if (typeof min === 'number') cfg.min = min;
+					if (typeof max === 'number') cfg.max = max;
+					if (typeof step === 'number') cfg.step = step;
+					clampAndSnap();
+					_this.blue_red1 = leftVal;
+					_this.blue_red2 = rightVal;
+					setGradient();
+					setThumbPositions();
+					setLabels();
+					notify();
+				};
+				_this.updateBlueRedRange = updateRangeParams;
+
+				let active = null;
+				const onMove = (evt) =>
+				{
+					if (!active) return;
+					const val = xToValue(evt.clientX);
+					if (active === leftThumb) {
+						leftVal = Math.max(cfg.min, Math.min(rightVal, val));
+						rightVal = Math.max(leftVal, rightVal);
+					} else {
+						rightVal = Math.max(leftVal, Math.min(cfg.max, val));
+						leftVal = Math.min(leftVal, rightVal);
+					}
+					setGradient();
+					setThumbPositions();
+					setLabels();
+					notify();
+				};
+				const onUp = () =>
+				{
+					active = null;
+					document.removeEventListener('mousemove', onMove);
+					document.removeEventListener('mouseup', onUp);
+					leftThumb.style.cursor = 'grab';
+					rightThumb.style.cursor = 'grab';
+				};
+				leftThumb.addEventListener('mousedown', (evt) => {
+					evt.preventDefault();
+					evt.stopPropagation();
+					active = leftThumb;
+					leftThumb.style.cursor = 'grabbing';
+					document.addEventListener('mousemove', onMove);
+					document.addEventListener('mouseup', onUp);
+				});
+				rightThumb.addEventListener('mousedown', (evt) => {
+					evt.preventDefault();
+					evt.stopPropagation();
+					active = rightThumb;
+					rightThumb.style.cursor = 'grabbing';
+					document.addEventListener('mousemove', onMove);
+					document.addEventListener('mouseup', onUp);
+				});
+				track.addEventListener('mousedown', (evt) => {
+					if (evt.target === track) {
+						evt.preventDefault();
+						const val = xToValue(evt.clientX);
+						const mid = (leftVal + rightVal) / 2;
+						if (val <= mid) {
+							leftVal = Math.max(cfg.min, Math.min(rightVal, val));
+						} else {
+							rightVal = Math.max(leftVal, Math.min(cfg.max, val));
+						}
+						setGradient();
+						setThumbPositions();
+						setLabels();
+						notify();
+					}
+				});
+			}
+
+			{
+				const a = document.createElement('a');
+
+				a.className = 'input-element -button';
+				a.innerHTML = locale['Set blue/red'][window.__LANG__];
+				a.addEventListener
+				(
+					'click',
+
+					() =>
+					{
+						_this.toggleVertexColors();
+					},
+				);
+
+				controls.appendChild(a);
+			}
     }
 
     // {

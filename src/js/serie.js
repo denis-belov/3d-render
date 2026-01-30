@@ -2,29 +2,26 @@ import * as dat from 'dat.gui';
 
 import JSZip from 'jszip';
 
-// Mesh Rendering
-import * as THREE from 'three';
-import { OrbitControls as THREE_OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
-import { STLExporter as THREE_STLExporter } from 'three/examples/jsm/exporters/STLExporter';
 import * as nifti from 'nifti-js';
 import * as niftiReader from 'nifti-reader-js';
 
 // Volume rendering
 import '@kitware/vtk.js/Rendering/Profiles/Volume';
 
+import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+
 import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
-import SerieBase from './serie-base';
-
-// import MarchingCubesWorker from '../workers/marching-cubes.worker';
-import CommonWorker from '../workers/common.worker';
+import MCWorker from '../workers/mc.worker';
 
 import { addMarkupAPI, getMarkupAPI } from './api';
 
 import { getViewportUIVolume, getViewportUIVolume3D } from './viewport-ui';
+import { addContourLineActorsToViewport, addCenterlineToViewport3D, updateSphereActorCenter, updateCenterlineLinePoints } from './contourLinesAsVtk';
+import { computeCenterline, interpolateCatmullRomSpline, getTangentAtControlPoint, crossSectionAtCenterlinePoint, worldToNearestSegmentVoxel } from './centerlineFromSegmentation';
 
-import { cache, imageLoader } from '@cornerstonejs/core';
+import { cache, imageLoader, eventTarget } from '@cornerstonejs/core';
 import * as labelmapInterpolation from '@cornerstonejs/labelmap-interpolation';
 
 import { createSegmentationGUI, addSegmentationGUI, activateSegmentationGUI } from './createSegmentationGUI';
@@ -254,8 +251,6 @@ cornerstone.cache.setMaxCacheSize(cornerstone.cache.getMaxCacheSize() * 2);
 
 
 
-const three_stl_exporter = new THREE_STLExporter();
-
 const link = document.createElement('a');
 link.style.display = 'none';
 document.body.appendChild(link);
@@ -339,107 +334,10 @@ window.downloadZip = downloadZip;
 
 
 
-THREE.ShaderChunk.color_fragment =
-	`#ifdef USE_COLOR
-		// diffuseColor.rgb *= vColor;
-		// diffuseColor.rgb = mix(vec3(vColor.r, 0.0, 1.0 - vColor.b), vec3(1.0 - vColor.r, 0.0, vColor.b), interp);
-		// diffuseColor.rgb = vColor.r < interp ? mix(vec3(vColor), vec3(1.0, 0.0, 0.0), 0.5) : mix(vec3(vColor), vec3(0.0, 0.0, 1.0), 0.5);
-
-		// if (vColor.r < interp - 0.1)
-		// {
-		// 	diffuseColor.rgb = vec3(vColor.r, 0.0, 0.0);
-		// }
-		// else if (vColor.r < interp)
-		// {
-		// 	diffuseColor.rgb = mix(vec3(vColor.r, 0.0, 0.0), vec3(1.0, 1.0, 1.0), 1.0 - (interp - vColor.r) * 10.0);
-		// }
-		// else if (vColor.r < interp + 0.1)
-		// {
-		// 	diffuseColor.rgb = mix(vec3(1.0, 1.0, 1.0), vec3(0.0, 0.0, vColor.r), 1.0 - (interp + 0.1 - vColor.r) * 10.0);
-		// }
-		// else
-		// {
-		// 	diffuseColor.rgb = vec3(0.0, 0.0, vColor.r);
-		// }
-
-		// if (pow(vColor.r, 2.0) < interp)
-		// {
-		// 	diffuseColor.rgb = vec3(vColor.r, 0.0, 0.0);
-		// }
-		// else
-		// {
-		// 	diffuseColor.rgb = vec3(0.0, 0.0, vColor.r);
-		// }
-
-		if (pow(vColor.r, 1.0) < interp)
-		{
-			diffuseColor.rgb = vec3(1.0, 0.0, 0.0);
-		}
-		else
-		{
-			diffuseColor.rgb = vec3(0.0, 0.0, 1.0);
-		}
-
-		// diffuseColor.rgb = vColor;
-	#endif`;
-
-const material1 =
-	// new THREE.MeshPhongMaterial
-	new THREE.MeshLambertMaterial
-	({
-		vertexColors: true,
-		// transparent: true,
-		side: THREE.DoubleSide,
-		flatShading: false,
-
-		onBeforeCompile: shader =>
-		{
-			shader.uniforms.interp = { value: 0 };
-
-			shader.fragmentShader =
-				`uniform float interp;
-				${ shader.fragmentShader }`;
-
-			Serie.shader = shader;
-		},
-	});
-
-const material2 =
-	new THREE.MeshLambertMaterial
-	({
-		vertexColors: true,
-		side: THREE.DoubleSide,
-		flatShading: false,
-
-		onBeforeCompile: shader =>
-		{
-			shader.uniforms.interp = { value: 0 };
-
-			shader.fragmentShader =
-				`uniform float interp;
-				${ shader.fragmentShader.slice(0, -1) }
-					if (vColor.r < - 0.5)
-					{
-						discard;
-					}
-				}`;
-
-			Serie.shader2 = shader;
-		},
-	});
 
 
 
-const bounding_box =
-[
-	{ min: Infinity, max: -Infinity },
-	{ min: Infinity, max: -Infinity },
-	{ min: Infinity, max: -Infinity },
-];
-
-
-
-export default class Serie extends SerieBase
+export default class Serie
 {
 	async init (imageIds, volume_id, viewport_inputs, segmentationIsEnabled, study_index, parent)
 	{
@@ -453,8 +351,6 @@ export default class Serie extends SerieBase
 		this.segmentation_type = null;
 
 		this.series_id = imageIds.series_id;
-
-		LOG('viewport_inputs 123123', viewport_inputs)
 
 		if ((imageIds.modality !== 'MR' && imageIds.modality !== 'CT') || imageIds.length === 1)
 		{
@@ -480,8 +376,6 @@ export default class Serie extends SerieBase
 
 			viewport_inputs[0].type = cornerstone.Enums.ViewportType.ORTHOGRAPHIC;
 
-			LOG('viewport_inputs', viewport_inputs)
-
 			viewport_inputs.forEach(vi => this.renderingEngine.enableElement(vi));
 
 			const volume = await cornerstone.volumeLoader.createAndCacheVolume(volume_id, { imageIds });
@@ -489,8 +383,6 @@ export default class Serie extends SerieBase
 			this.volume = volume;
 
 			await new Promise(resolve => volume.load(resolve));
-
-			this.volume.scalarData = this.volume.voxelManager.getCompleteScalarDataArray();
 
 			// data_range = volume.imageData.getPointData().getScalars().getRange();
 			data_range = volume.voxelManager.getRange();
@@ -573,18 +465,12 @@ export default class Serie extends SerieBase
 
 			if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
 			{
-				this.volume_segm = await this.createVolumeSegmentation(`${ volume_id }_SEGM`);
-
-				this.volume_segm.scalarData = this.volume_segm.voxelManager.getCompleteScalarDataArray();
-
-				this.recomputeBoundingBox();
+				this.volume_segm = await this.createVolumeSegmentations(`${ volume_id }_SEGM`);
 
 				// // TODO: call these functions when all webgl textures have been created
 				// // and remove try block from "activateSegmentation".
 				// this.addSegmentation();
 				// this.activateSegmentation(0);
-
-				// this.workers = await this.initCommonWorkers(32);
 			}
 			else
 			{
@@ -626,8 +512,35 @@ export default class Serie extends SerieBase
 
 			cornerstoneTools.segmentation.segmentIndex.setActiveSegmentIndex(this.volume_segm.volumeId, this.current_segm + 2);
 
+			// Run action after drawing stops (SEGMENTATION_DATA_MODIFIED fires on mousemove; debounce to effectively run on mouse up)
+			if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
+			{
+				let segmentationDataModifiedDebounceId = null;
+				const DEBOUNCE_MS = 250;
+				const runAfterDrawEnd = () =>
+				{
+					this.vertexColorsEnabled = false;
+					window?.__test111__();
+					if (this.vertexColorsEnabled) this.applyVertexColors(this.blue_red1, this.blue_red2);
+					const viewport = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
+					if (viewport) this.renderingEngine.renderViewports([ viewport.id ]);
+				};
+				const onSegmentationDataModified = (evt) =>
+				{
+					if (evt.detail.segmentationId !== this.volume_segm.volumeId) return;
+					if (segmentationDataModifiedDebounceId !== null) clearTimeout(segmentationDataModifiedDebounceId);
+					segmentationDataModifiedDebounceId = setTimeout(() =>
+					{
+						segmentationDataModifiedDebounceId = null;
+						runAfterDrawEnd();
+					}, DEBOUNCE_MS);
+				};
+				eventTarget.addEventListener(cornerstoneTools.Enums.Events.SEGMENTATION_DATA_MODIFIED, onSegmentationDataModified);
+			}
+
 			{
 				this.smoothing = 20;
+				this.vertexColorsEnabled = false; // Default to enabled
 
 				// this.setRegionThresholdNegative(0);
 				// this.setRegionThresholdPositive(95);
@@ -640,256 +553,254 @@ export default class Serie extends SerieBase
 					{
 						actions:
 						{
-							'download segmentation': () => this.downloadSegmentation(),
+							// 'download segmentation': () => this.downloadSegmentation(),
 
-							'upload segmentation 2': async () =>
-							{
-								const file_input = document.createElement('input');
+							// 'upload segmentation 2': async () =>
+							// {
+							// 	const file_input = document.createElement('input');
 
-								file_input.type = 'file';
+							// 	file_input.type = 'file';
 
-								const _data =
-									await new Promise
-									(
-										resolve =>
-										{
-											file_input.onchange =
-												() =>
-												{
-													const fr = new FileReader();
+							// 	const _data =
+							// 		await new Promise
+							// 		(
+							// 			resolve =>
+							// 			{
+							// 				file_input.onchange =
+							// 					() =>
+							// 					{
+							// 						const fr = new FileReader();
 
-													fr.onload = () => resolve(fr.result);
+							// 						fr.onload = () => resolve(fr.result);
 
-													fr.readAsArrayBuffer(file_input.files[0]);
-												};
+							// 						fr.readAsArrayBuffer(file_input.files[0]);
+							// 					};
 
-											file_input.click();
-										},
-									);
+							// 				file_input.click();
+							// 			},
+							// 		);
 
-								this.clearSegmentation();
+							// 	this.clearSegmentation();
 
-								const _data_float32 = new Float32Array(_data);
+							// 	const _data_float32 = new Float32Array(_data);
 
-								for (let i = 0; i < this.volume.scalarData.length; ++i)
-								{
-									this.volume_segm.scalarData[i] = _data_float32[i] ? (this.current_segm + 2) : 0;
-								}
+							// 	const sd = this.volume.voxelManager.getCompleteScalarDataArray();
+							// 	const sd_segm = this.volume_segm.voxelManager.getCompleteScalarDataArray();
 
-								if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-								{
-									this.recomputeBoundingBox();
-								}
+							// 	for (let i = 0; i < sd.length; ++i)
+							// 	{
+							// 		sd_segm[i] = _data_float32[i] ? (this.current_segm + 2) : 0;
+							// 	}
 
-								cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
-							},
+							// 	cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
+							// },
 
-							'copy segmentation': async () =>
-							{
-								const src_viewport = this.viewports[0];
+							// 'copy segmentation': async () =>
+							// {
+							// 	const src_viewport = this.viewports[0];
 
-								if (!src_viewport)
-								{
-									return;
-								}
+							// 	if (!src_viewport)
+							// 	{
+							// 		return;
+							// 	}
 
-								const src_segm =
-									cache.getVolume
-									(
-										src_viewport
-											.getActors()
-											.find(actor_desc => actor_desc !== src_viewport.getDefaultActor())
-											.referenceId,
-									);
+							// 	const src_segm =
+							// 		cache.getVolume
+							// 		(
+							// 			src_viewport
+							// 				.getActors()
+							// 				.find(actor_desc => actor_desc !== src_viewport.getDefaultActor())
+							// 				.referenceId,
+							// 		);
 
-								window.__series
-									.filter(series => series !== this)
-									.forEach
-									(
-										series =>
-										{
-											const dst_viewport = series.viewports[0];
+							// 	window.__series
+							// 		.filter(series => series !== this)
+							// 		.forEach
+							// 		(
+							// 			series =>
+							// 			{
+							// 				const dst_viewport = series.viewports[0];
 
-											const volumeId =
-												dst_viewport
-													.getActors()
-													.find(actor_desc => actor_desc !== dst_viewport.getDefaultActor())
-													.referenceId;
+							// 				const volumeId =
+							// 					dst_viewport
+							// 						.getActors()
+							// 						.find(actor_desc => actor_desc !== dst_viewport.getDefaultActor())
+							// 						.referenceId;
 
-											const dst_segm = cache.getVolume(volumeId);
+							// 				const dst_segm = cache.getVolume(volumeId);
 
-											for (let i = 0; i < src_segm.dimensions[0]; ++i)
-											{
-												for (let j = 0; j < src_segm.dimensions[1]; ++j)
-												{
-													for (let k = 0; k < src_segm.dimensions[2]; ++k)
-													{
-														const scalar = src_segm.scalarData[this.ijkToLinear(i, j, k)];
+							// 				const sd_src = src_segm.voxelManager.getCompleteScalarDataArray();
+							// 				const sd_dst = dst_segm.voxelManager.getCompleteScalarDataArray();
 
-														if (scalar)
-														{
-															const pointIJK = [ i, j, k ];
+							// 				for (let i = 0; i < src_segm.dimensions[0]; ++i)
+							// 				{
+							// 					for (let j = 0; j < src_segm.dimensions[1]; ++j)
+							// 					{
+							// 						for (let k = 0; k < src_segm.dimensions[2]; ++k)
+							// 						{
+							// 							const scalar = sd_src[this.ijkToLinear(i, j, k)];
 
-															const ijk_from = dst_segm.imageData.worldToIndex(src_segm.imageData.indexToWorld(pointIJK)).map(elm=> Math.floor(elm));
-															const ijk_to = dst_segm.imageData.worldToIndex(src_segm.imageData.indexToWorld(pointIJK.map(elm => elm + 1))).map(elm=> Math.ceil(elm));
+							// 							if (scalar)
+							// 							{
+							// 								const pointIJK = [ i, j, k ];
 
-															const y_mul_dst = dst_segm.dimensions[0];
-															const z_mul_dst = dst_segm.dimensions[0] * dst_segm.dimensions[1];
+							// 								const ijk_from = dst_segm.imageData.worldToIndex(src_segm.imageData.indexToWorld(pointIJK)).map(elm=> Math.floor(elm));
+							// 								const ijk_to = dst_segm.imageData.worldToIndex(src_segm.imageData.indexToWorld(pointIJK.map(elm => elm + 1))).map(elm=> Math.ceil(elm));
 
-															for (let i = ijk_from[0]; i < ijk_to[0]; ++i)
-															{
-																	for (let j = ijk_from[1]; j < ijk_to[1]; ++j)
-																	{
-																			for (let k = ijk_from[2]; k < ijk_to[2]; ++k)
-																			{
-																					const ind = i + (j * y_mul_dst) + (k * z_mul_dst);
+							// 								const y_mul_dst = dst_segm.dimensions[0];
+							// 								const z_mul_dst = dst_segm.dimensions[0] * dst_segm.dimensions[1];
 
-																					dst_segm.scalarData[ind] = scalar;
-																			}
-																	}
-															}
-														}
-													}
-												}
-											}
+							// 								for (let i = ijk_from[0]; i < ijk_to[0]; ++i)
+							// 								{
+							// 										for (let j = ijk_from[1]; j < ijk_to[1]; ++j)
+							// 										{
+							// 												for (let k = ijk_from[2]; k < ijk_to[2]; ++k)
+							// 												{
+							// 														const ind = i + (j * y_mul_dst) + (k * z_mul_dst);
 
-											cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(volumeId);
-										},
-									);
-							},
+							// 													sd_dst[ind] = scalar;
+							// 												}
+							// 										}
+							// 								}
+							// 							}
+							// 						}
+							// 					}
+							// 				}
 
-							'upload segmentation': async () =>
-							{
-								const file_input = document.createElement('input');
+							// 				cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(volumeId);
+							// 			},
+							// 		);
+							// },
 
-								file_input.type = 'file';
+							// 'upload segmentation': async () =>
+							// {
+							// 	const file_input = document.createElement('input');
 
-								const _data =
-									await new Promise
-									(
-										resolve =>
-										{
-											file_input.onchange =
-												() =>
-												{
-													const fr = new FileReader();
+							// 	file_input.type = 'file';
 
-													fr.onload = () => resolve(fr.result);
+							// 	const _data =
+							// 		await new Promise
+							// 		(
+							// 			resolve =>
+							// 			{
+							// 				file_input.onchange =
+							// 					() =>
+							// 					{
+							// 						const fr = new FileReader();
 
-													fr.readAsArrayBuffer(file_input.files[0]);
-												};
+							// 						fr.onload = () => resolve(fr.result);
 
-											file_input.click();
-										},
-									);
+							// 						fr.readAsArrayBuffer(file_input.files[0]);
+							// 					};
 
-								const zip = new JSZip();
+							// 				file_input.click();
+							// 			},
+							// 		);
 
-								await zip.loadAsync(_data);
+							// 	const zip = new JSZip();
+
+							// 	await zip.loadAsync(_data);
 
 
 
-								const viewports = this.renderingEngine.getViewports();
+							// 	const viewports = this.renderingEngine.getViewports();
 
-								for (let i = 0; i < viewports.length; ++i)
-								{
-									const viewport = viewports[i];
+							// 	for (let i = 0; i < viewports.length; ++i)
+							// 	{
+							// 		const viewport = viewports[i];
 
-									const series = viewport.__series;
+							// 		const series = viewport.__series;
 
-									const zip_file = zip.file(`${ series.imageIds.series_id }:Segmentation`);
+							// 		const zip_file = zip.file(`${ series.imageIds.series_id }:Segmentation`);
 
-									if (!zip_file)
-									{
-										continue;
-									}
+							// 		if (!zip_file)
+							// 		{
+							// 			continue;
+							// 		}
 
-									series.clearSegmentation();
-									createSegmentationGUI(series);
+							// 		series.clearSegmentation();
+							// 		createSegmentationGUI(series);
 
-									series.segmentations.length = 0;
+							// 		series.segmentations.length = 0;
 
-									{
-										const data_uint8 = await zip_file.async('nodebuffer');
+							// 		{
+							// 			const data_uint8 = await zip_file.async('nodebuffer');
 
-										let data_orig = null;
+							// 			let data_orig = null;
 
-										if (series.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-										{
-											data_orig = new Float32Array(data_uint8.buffer);
-										}
-										else
-										{
-											data_orig = data_uint8;
-										}
+							// 			if (series.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
+							// 			{
+							// 				data_orig = new Float32Array(data_uint8.buffer);
+							// 			}
+							// 			else
+							// 			{
+							// 				data_orig = data_uint8;
+							// 			}
 
-										series.addSegmentation();
-										series.activateSegmentation(0);
+							// 			series.addSegmentation();
+							// 			series.activateSegmentation(0);
 
-										if (series.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-										{
-											for (let i = 0; i < data_orig.length; ++i)
-											{
-												series.volume_segm.scalarData[i] = data_orig[i] ? (series.current_segm + 2) : 0;
-											}
-										}
-										else
-										{
-											series.segmentationImageIds.forEach
-											(
-												(id, id_index) =>
-												{
-													const begin = series.segmentationImageIds[id_index - 1] ? cornerstone.cache.getImage(series.segmentationImageIds[id_index - 1]).getPixelData().length : 0;
+							// 			if (series.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
+							// 			{
+							// 				const sd_segm = series.volume_segm.voxelManager.getCompleteScalarDataArray();
 
-													const end = begin + cornerstone.cache.getImage(id).getPixelData().length;
+							// 				for (let i = 0; i < data_orig.length; ++i)
+							// 				{
+							// 					sd_segm[i] = data_orig[i] ? (series.current_segm + 2) : 0;
+							// 				}
+							// 			}
+							// 			else
+							// 			{
+							// 				series.segmentationImageIds.forEach
+							// 				(
+							// 					(id, id_index) =>
+							// 					{
+							// 						const begin = series.segmentationImageIds[id_index - 1] ? cornerstone.cache.getImage(series.segmentationImageIds[id_index - 1]).getPixelData().length : 0;
 
-													cornerstone.cache.getImage(id).getPixelData().set(data_orig.subarray(begin, end));
-												},
-											);
-										}
-									}
+							// 						const end = begin + cornerstone.cache.getImage(id).getPixelData().length;
 
-									if (series.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-									{
-										series.recomputeBoundingBox();
-									}
+							// 						cornerstone.cache.getImage(id).getPixelData().set(data_orig.subarray(begin, end));
+							// 					},
+							// 				);
+							// 			}
+							// 		}
 
-									series.activateSegmentation(0);
+							// 		series.activateSegmentation(0);
 
-									cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(series.volume_segm.volumeId);
-								}
-							},
+							// 		cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(series.volume_segm.volumeId);
+							// 	}
+							// },
 
-							'download segmentation': async () =>
-							{
-								const zip = new JSZip();
+							// 'download segmentation': async () =>
+							// {
+							// 	const zip = new JSZip();
 
-								const viewports = this.renderingEngine.getViewports();
+							// 	const viewports = this.renderingEngine.getViewports();
 
-								for (let i = 0; i < viewports.length; ++i)
-								{
-									const viewport = viewports[i];
+							// 	for (let i = 0; i < viewports.length; ++i)
+							// 	{
+							// 		const viewport = viewports[i];
 
-									const series = viewport.__series;
+							// 		const series = viewport.__series;
 
-									series.activateSegmentation(series.current_segm);
+							// 		series.activateSegmentation(series.current_segm);
 
-									for (let i = 0; i < series.segmentations.length; ++i)
-									{
-										const segm = series.segmentations[i];
+							// 		for (let i = 0; i < series.segmentations.length; ++i)
+							// 		{
+							// 			const segm = series.segmentations[i];
 
-										const data_orig = segm.a;
+							// 			const data_orig = segm.a;
 
-										const data_uint8 = new Uint8Array(data_orig.buffer);
+							// 			const data_uint8 = new Uint8Array(data_orig.buffer);
 
-										zip.file(`${ series.imageIds.series_id }:Segmentation`, data_uint8);
-									}
-								}
+							// 			zip.file(`${ series.imageIds.series_id }:Segmentation`, data_uint8);
+							// 		}
+							// 	}
 
-								const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
+							// 	const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
 
-								downloadZip(data_zip, 'Segmentation');
-							},
+							// 	downloadZip(data_zip, 'Segmentation');
+							// },
 						},
 
 						data:
@@ -913,138 +824,135 @@ export default class Serie extends SerieBase
 				{
 					if (this.study_index === 0)
 					{
-						gui_options.actions['save segmentation'] = async () =>
-						{
-							parent.setState({ loading: true, loader_title: 'Сохранение сегментации' });
+						// gui_options.actions['save segmentation'] = async () =>
+						// {
+						// 	parent.setState({ loading: true, loader_title: 'Сохранение сегментации' });
 
-							function arrayBufferToBase64 (buffer)
-							{
-								let binary = '';
-								const bytes = new Uint8Array(buffer);
-								let len = bytes.byteLength;
-								for (let i = 0; i < len; ++i)
-								{
-									binary += String.fromCharCode(bytes[i]);
-								}
-								return window.btoa(binary);
-							}
+						// 	function arrayBufferToBase64 (buffer)
+						// 	{
+						// 		let binary = '';
+						// 		const bytes = new Uint8Array(buffer);
+						// 		let len = bytes.byteLength;
+						// 		for (let i = 0; i < len; ++i)
+						// 		{
+						// 			binary += String.fromCharCode(bytes[i]);
+						// 		}
+						// 		return window.btoa(binary);
+						// 	}
 
-							this.activateSegmentation(this.current_segm);
+						// 	this.activateSegmentation(this.current_segm);
 
-							for (let i = 0; i < this.segmentations.length; ++i)
-							{
-								const segm = this.segmentations[i];
+						// 	for (let i = 0; i < this.segmentations.length; ++i)
+						// 	{
+						// 		const segm = this.segmentations[i];
 
-								const zip = new JSZip();
+						// 		const zip = new JSZip();
 
-								const data_orig = segm.a;
+						// 		const data_orig = segm.a;
 
-								const data_uint8 = new Uint8Array(data_orig.buffer);
+						// 		const data_uint8 = new Uint8Array(data_orig.buffer);
 
-								zip.file('Segmentation', data_uint8);
+						// 		zip.file('Segmentation', data_uint8);
 
-								const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
+						// 		const data_zip = await (await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })).arrayBuffer();
 
-								let class_name = null;
+						// 		let class_name = null;
 
-								if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-								{
-									class_name = `${ segm.name };${ this.volume.dimensions };${ this.series_id }`;
-								}
-								else
-								{
-									const { width, height } = cornerstone.cache.getImage(this.segmentationImageIds[0]);
+						// 		if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
+						// 		{
+						// 			class_name = `${ segm.name };${ this.volume.dimensions };${ this.series_id }`;
+						// 		}
+						// 		else
+						// 		{
+						// 			const { width, height } = cornerstone.cache.getImage(this.segmentationImageIds[0]);
 
-									class_name = `${ segm.name };${ width },${ height };${ this.series_id }`;
-								}
+						// 			class_name = `${ segm.name };${ width },${ height };${ this.series_id }`;
+						// 		}
 
-								const layout_json = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, this.volume_segm.volumeId, i + 2);
+						// 		const layout_json = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, this.volume_segm.volumeId, i + 2);
 
-								await addMarkupAPI(parseInt(window.__MARKUP_DST__, 10), class_name, arrayBufferToBase64(new Uint8Array(layout_json).buffer), arrayBufferToBase64(data_zip));
-							}
+						// 		await addMarkupAPI(parseInt(window.__MARKUP_DST__, 10), class_name, arrayBufferToBase64(new Uint8Array(layout_json).buffer), arrayBufferToBase64(data_zip));
+						// 	}
 
-							parent.setState({ loading: false });
-						};
+						// 	parent.setState({ loading: false });
+						// };
 
-						gui_options.actions['restore segmentation'] = async () =>
-						{
-							const { markup_data, class_name, layout_json } = await getMarkupAPI(parseInt(window.__MARKUP_SRC__, 10));
+						// gui_options.actions['restore segmentation'] = async () =>
+						// {
+						// 	const { markup_data, class_name, layout_json } = await getMarkupAPI(parseInt(window.__MARKUP_SRC__, 10));
 
-							if (markup_data?.length === 0)
-							{
-								return;
-							}
+						// 	if (markup_data?.length === 0)
+						// 	{
+						// 		return;
+						// 	}
 
-							this.clearSegmentation();
-							createSegmentationGUI(this);
+						// 	this.clearSegmentation();
+						// 	createSegmentationGUI(this);
 
-							this.segmentations.length = 0;
+						// 	this.segmentations.length = 0;
 
-							for (let i = 0; i < class_name.length; ++i)
-							{
-								if (layout_json?.length)
-								{
-									cornerstoneTools.segmentation.config.color.setSegmentIndexColor(viewport.id, this.volume_segm.volumeId, i + 2, new Uint8Array(Uint8Array.from(atob(layout_json[i]), c => c.charCodeAt(0))));
-								}
+						// 	for (let i = 0; i < class_name.length; ++i)
+						// 	{
+						// 		if (layout_json?.length)
+						// 		{
+						// 			cornerstoneTools.segmentation.config.color.setSegmentIndexColor(viewport.id, this.volume_segm.volumeId, i + 2, new Uint8Array(Uint8Array.from(atob(layout_json[i]), c => c.charCodeAt(0))));
+						// 		}
 
 
 
-								const data_zip = Uint8Array.from(atob(markup_data[i]), c => c.charCodeAt(0));
+						// 		const data_zip = Uint8Array.from(atob(markup_data[i]), c => c.charCodeAt(0));
 
-								const zip = new JSZip();
+						// 		const zip = new JSZip();
 
-								await zip.loadAsync(data_zip);
+						// 		await zip.loadAsync(data_zip);
 
-								const data_uint8 = await zip.file('Segmentation').async('nodebuffer');
+						// 		const data_uint8 = await zip.file('Segmentation').async('nodebuffer');
 
-								let data_orig = null;
+						// 		let data_orig = null;
 
-								if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-								{
-									data_orig = new Float32Array(data_uint8.buffer);
-								}
-								else
-								{
-									data_orig = data_uint8;
-								}
+						// 		if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
+						// 		{
+						// 			data_orig = new Float32Array(data_uint8.buffer);
+						// 		}
+						// 		else
+						// 		{
+						// 			data_orig = data_uint8;
+						// 		}
 
-								this.addSegmentation(class_name[i].split(';')[0]);
-								this.activateSegmentation(i);
+						// 		this.addSegmentation(class_name[i].split(';')[0]);
+						// 		this.activateSegmentation(i);
 
-								if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-								{
-									for (let i = 0; i < data_orig.length; ++i)
-									{
-										this.volume_segm.scalarData[i] = data_orig[i] ? (this.current_segm + 2) : 0;
-									}
-								}
-								else
-								{
-									this.segmentationImageIds.forEach
-									(
-										(id, id_index) =>
-										{
-											const begin = this.segmentationImageIds[id_index - 1] ? cornerstone.cache.getImage(this.segmentationImageIds[id_index - 1]).getPixelData().length : 0;
+						// 		if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
+						// 		{
+						// 			const sd_segm = this.volume_segm.voxelManager.getCompleteScalarDataArray();
 
-											const end = begin + cornerstone.cache.getImage(id).getPixelData().length;
+						// 			for (let i = 0; i < data_orig.length; ++i)
+						// 			{
+						// 				sd_segm[i] = data_orig[i] ? (this.current_segm + 2) : 0;
+						// 			}
+						// 		}
+						// 		else
+						// 		{
+						// 			this.segmentationImageIds.forEach
+						// 			(
+						// 				(id, id_index) =>
+						// 				{
+						// 					const begin = this.segmentationImageIds[id_index - 1] ? cornerstone.cache.getImage(this.segmentationImageIds[id_index - 1]).getPixelData().length : 0;
 
-											cornerstone.cache.getImage(id).getPixelData().set(data_orig.subarray(begin, end));
-										},
-									);
-								}
-							}
+						// 					const end = begin + cornerstone.cache.getImage(id).getPixelData().length;
 
-							if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-							{
-								this.recomputeBoundingBox();
-							}
+						// 					cornerstone.cache.getImage(id).getPixelData().set(data_orig.subarray(begin, end));
+						// 				},
+						// 			);
+						// 		}
+						// 	}
 
-							this.activateSegmentation(0);
+						// 	this.activateSegmentation(0);
 
-							cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
-						};
+						// 	cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
+						// };
 
-						gui_options.actions['restore segmentation']();
+						// gui_options.actions['restore segmentation']();
 					}
 				}
 
@@ -1778,6 +1686,9 @@ export default class Serie extends SerieBase
 
 					this.gui_options = gui_options;
 
+					this.blue_red1 = 1.2;
+					this.blue_red2 = 1.32;
+
 					const gui_folders =
 					{
 						actions: null,
@@ -1798,117 +1709,6 @@ export default class Serie extends SerieBase
 					}
 
 					gui_folders.options = this.dat_gui.addFolder('Options');
-
-					this.setFiltering = null;
-
-					if (window.__CONFIG__.features?.includes('filtering'))
-					{
-						this.setFiltering = (value) =>
-						{
-							Serie.shader && (Serie.shader.uniforms.interp.value = value);
-							Serie.shader2 && (Serie.shader2.uniforms.interp.value = value);
-
-							this.renderThreeScene();
-
-							const [ mesh ] =
-								this.three_scene.children
-									.filter(child => (child.constructor === THREE.Mesh));
-
-							const ind = mesh.geometry.index.array;
-							const pos = mesh.geometry.attributes.position.array;
-							const col = mesh.geometry.attributes.color.array;
-
-							let sum_red = 0;
-							let sum_blue = 0;
-
-							for (let i = 0, i_max = ind.length; i < i_max; i += 3)
-							{
-								// triangle
-								const a = ind[i + 0];
-								const b = ind[i + 1];
-								const c = ind[i + 2];
-
-								const ap = new THREE.Vector3(pos[(a * 3) + 0], pos[(a * 3) + 1], pos[(a * 3) + 2]);
-								const bp = new THREE.Vector3(pos[(b * 3) + 0], pos[(b * 3) + 1], pos[(b * 3) + 2]);
-								const cp = new THREE.Vector3(pos[(c * 3) + 0], pos[(c * 3) + 1], pos[(c * 3) + 2]);
-
-								const ac = col[a * 3];
-								const bc = col[b * 3];
-								const cc = col[c * 3];
-
-								let red = 1;
-								let blue = 1;
-
-								if (ac > value)
-								{
-									red -= 0.33;
-								}
-								else
-								{
-									blue -= 0.33;
-								}
-
-								if (bc > value)
-								{
-									red -= 0.33;
-								}
-								else
-								{
-									blue -= 0.33;
-								}
-
-								if (cc > value)
-								{
-									red -= 0.33;
-								}
-								else
-								{
-									blue -= 0.33;
-								}
-
-								if (red < 0.1)
-								{
-									red = 0;
-								}
-
-								if (blue < 0.1)
-								{
-									blue = 0;
-								}
-
-								const s1 = ap.distanceTo(bp);
-								const s2 = bp.distanceTo(cp);
-								const s3 = cp.distanceTo(ap);
-
-								const s = (s1 + s2 + s3) / 2;
-
-								const sq = Math.sqrt(s * (s - s1) * (s - s2) * (s - s3));
-
-								sum_red += sq * red;
-								sum_blue += sq * blue;
-							}
-
-							// LOG('colors', sum_red, sum_blue)
-
-							gui_options.data.area = sum_red;
-
-							// if (pow(vColor.r, 1.0) < interp)
-							// {
-							// 	diffuseColor.rgb = vec3(1.0, 0.0, 0.0);
-							// }
-							// else
-							// {
-							// 	diffuseColor.rgb = vec3(0.0, 0.0, 1.0);
-							// }
-						};
-
-						// gui_folders.options
-						// 	.add(gui_options.options, 'filtering', 0, 1, 0.01)
-						// 	.onChange
-						// 	(
-						// 		,
-						// 	);
-					}
 
 					// gui_folders.options
 					// 	.add(gui_options.options, 'smoothing', 0, 100, 1)
@@ -2093,11 +1893,6 @@ export default class Serie extends SerieBase
 				);
 			}
 
-			if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-			{
-				this.recomputeBoundingBox();
-			}
-
 			// TODO: call these functions when all webgl textures have benn created
 			// and remove try block from "activateSegmentation".
 			this.addSegmentation();
@@ -2112,15 +1907,20 @@ export default class Serie extends SerieBase
 
 		viewport_inputs.forEach(({ viewportId }) => this.renderingEngine.getViewport(viewportId).render());
 
+		// Add window resize handler for all viewports
+		this.handleResize = () =>
+		{
+			this.renderingEngine.resize();
+		};
 
+		// Add resize event listener
+		window.addEventListener('resize', this.handleResize);
 
 		// return volume;
 	}
 
 	constructor ()
 	{
-		super();
-
 		if (!window.__series)
 		{
 			window.__series = [];
@@ -2134,6 +1934,34 @@ export default class Serie extends SerieBase
 		// this.toolGroup2 = cornerstoneTools.ToolGroupManager.getToolGroup('CORNERSTONE_TOOL_GROUP2');
 
 		const toolGroup = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP' + Date.now());
+
+		// function acceptCurrent() {
+		// 	this.viewports.forEach((viewport) => {
+		// 		for (const segmentationId of segmentationIds) {
+		// 			cornerstoneTools.utilities.contours.acceptAutogeneratedInterpolations(
+		// 				viewport.element,
+		// 				// {
+		// 				// 	segmentIndex:
+		// 				// 		segmentation.segmentIndex.getActiveSegmentIndex(segmentationId),
+		// 				// 	segmentationId: segmentationIdStack,
+		// 				// 	sliceIndex: viewport.getSliceIndex(),
+		// 				// }
+		// 			);
+		// 		}
+		// 	});
+
+		// 	renderingEngine.render();
+		// }
+
+		function acceptCurrent() {
+			this.viewports.forEach((viewport) => {
+				cornerstoneTools.utilities.contours.acceptAutogeneratedInterpolations(viewport.element);
+			});
+
+			renderingEngine.render();
+		}
+
+		window.acceptCurrent = acceptCurrent;
 
 		toolGroup.addTool(cornerstoneTools.StackScrollTool.toolName);
 		toolGroup.setToolActive(cornerstoneTools.StackScrollTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Wheel } ] });
@@ -2160,7 +1988,7 @@ export default class Serie extends SerieBase
 		toolGroup.addToolInstance('Spherical Brush Threshold Island', cornerstoneTools.BrushTool.toolName, { activeStrategy: 'THRESHOLD_INSIDE_SPHERE_WITH_ISLAND_REMOVAL', brushSize: 10, threshold: { isDynamic: true, dynamicRadius: 2, range: [ 200, 1000 ] } } );
 
 		toolGroup.addToolInstance('CatmullRomSplineROI', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.CatmullRom } } );
-		toolGroup.addToolInstance('CatmullRomSplineROI Interpolation', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.CatmullRom }, interpolation: { enabled: true, showInterpolationPolyline: true } } );
+		toolGroup.addToolInstance('CatmullRomSplineROI Interpolation', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.CatmullRom }, interpolation: { enabled: true, showInterpolationPolyline: true }, actions: { acceptCurrent: acceptCurrent } } );
 		toolGroup.addToolInstance('LinearSplineROI', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.Linear } } );
 		toolGroup.addToolInstance('LinearSplineROI Interpolation', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.Linear }, interpolation: { enabled: true, showInterpolationPolyline: true } } );
 		toolGroup.addToolInstance('BSplineROI', cornerstoneTools.SplineContourSegmentationTool.toolName, { spline: { type: cornerstoneTools.SplineContourSegmentationTool.SplineTypes.BSpline } } );
@@ -2171,125 +1999,338 @@ export default class Serie extends SerieBase
 		const toolGroup2 = cornerstoneTools.ToolGroupManager.createToolGroup('CORNERSTONE_TOOL_GROUP2' + Date.now());
 
 		toolGroup2.addTool(cornerstoneTools.TrackballRotateTool.toolName);
+		toolGroup2.addTool(cornerstoneTools.VolumeRotateTool.toolName);
+		toolGroup2.addTool(cornerstoneTools.ZoomTool.toolName);
+		toolGroup2.addTool(cornerstoneTools.PanTool.toolName);
 
 		toolGroup2.setToolEnabled(cornerstoneTools.TrackballRotateTool.toolName);
+		// toolGroup2.setToolEnabled(cornerstoneTools.VolumeRotateTool.toolName);
+		toolGroup2.setToolEnabled(cornerstoneTools.ZoomTool.toolName);
+		toolGroup2.setToolEnabled(cornerstoneTools.PanTool.toolName);
 
 		document.body
 			.querySelectorAll('.viewport_grid-canvas_panel-item')
 			.forEach(sel => (sel.style.cursor = 'default'));
 
 		toolGroup2.setToolActive(cornerstoneTools.TrackballRotateTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] });
+		// toolGroup2.setToolActive(cornerstoneTools.VolumeRotateTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary } ] });
+		toolGroup2.setToolActive(cornerstoneTools.ZoomTool.toolName, { bindings: [ { mouseButton: cornerstoneTools.Enums.MouseBindings.Wheel } ] });
+		toolGroup2.setToolActive(cornerstoneTools.PanTool.toolName, {
+			bindings: [
+				// { mouseButton: cornerstoneTools.Enums.MouseBindings.Auxiliary },
+				{ mouseButton: cornerstoneTools.Enums.MouseBindings.Secondary },
+				// { mouseButton: cornerstoneTools.Enums.MouseBindings.Primary, modifierKey: cornerstoneTools.Enums.KeyboardBindings.Shift },
+				// { numTouchPoints: 3 },
+			],
+		});
 
 		this.toolGroup = toolGroup;
 		this.toolGroup2 = toolGroup2;
 	}
 
-	async initCommonWorkers (worker_count)
+	getMCWorker (data)
 	{
-		const workers = new Array(worker_count).fill(null).map(() => new CommonWorker());
+		if (!this.mc_worker)
+		{
+			this.mc_worker = new MCWorker();
+		}
 
-		await Promise.all
-		(
-			workers
-				.map
-				(
-					worker =>
-						new Promise
-						(
-							resolve =>
-							{
-								worker.onmessage = resolve;
-
-								worker
-									.postMessage
-									({
-										serie:
-										{
-											volume:
-											{
-												dimensions: this.volume.dimensions,
-												scalarData: this.volume.scalarData,
-											},
-
-											volume_segm:
-											{
-												scalarData: this.volume_segm.scalarData,
-											},
-										},
-									});
-							},
-						),
-				),
-		);
-
-		return workers;
-	}
-
-	async updateCommonWorkers (workers, data)
-	{
-		await Promise
-			.all
-			(
-				workers
-					.map
-					(
-						worker =>
-						(
-							new Promise
-							(
-								resolve =>
-								{
-									worker.onmessage = resolve;
-
-									worker.postMessage({ serie: data });
-								},
-							)
-						),
-					),
-			);
-	}
-
-	runCommonWorker (worker_index, data)
-	{
-		const worker = this.workers[worker_index % this.workers.length];
-
-		return new Promise
-		(
-			resolve =>
-			{
-				worker.onmessage = resolve;
-
-				worker.postMessage(data);
-			},
-		);
-	}
-
-	downloadStlBinary ()
-	{
-		const result = three_stl_exporter.parse(this.three_scene, { binary: true });
-
-		downloadArraybuffer(result, 'box.stl');
-	}
-
-	downloadStlAscii ()
-	{
-		const result = three_stl_exporter.parse(this.three_scene);
-
-		downloadString(result, 'box.stl');
+		return this.mc_worker;
 	}
 
 	async downloadSegmentation ()
 	{
-		// this.volume_segm.volume_segm.voxelManager.getCompleteScalarDataArray();
-		downloadArraybuffer(this.volume_segm.scalarData.slice().buffer, this.segmentations[this.current_segm].name);
+		downloadArraybuffer(this.volume_segm.voxelManager.getCompleteScalarDataArray().buffer, this.segmentations[this.current_segm].name);
+	}
 
-		// const zip = new JSZip();
+	/** Target spacing (world units) between spline control points along the centerline; more points for longer paths. */
+	static CENTERLINE_CONTROL_POINT_SPACING = 8;
+	/** Min/max number of spline control points (including start and end). */
+	static CENTERLINE_NUM_CONTROL_MIN = 3;
+	static CENTERLINE_NUM_CONTROL_MAX = 31;
 
-		// zip.file(this.segmentations[this.current_segm].name, this.volume_segm.scalarData.slice().buffer);
+	/**
+	 * Compute centerline of the active segmentation (Dijkstra between farthest points),
+	 * sample to control points (count from path length), and render as a spline + draggable spheres.
+	 */
+	computeAndShowCenterline ()
+	{
+		if (!this.volume_segm?.voxelManager || !this.volume?.imageData) return;
+		const segScalarData = this.volume_segm.voxelManager.getCompleteScalarDataArray();
+		const imageData = this.volume.imageData;
+		const dimensions = imageData.getDimensions();
+		const segmentValue = Number(cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(this.volume_segm.volumeId));
+		const worldPoints = computeCenterline(segScalarData, dimensions, segmentValue, imageData);
+		if (worldPoints.length < 6) return;
+		const viewport = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
+		if (!viewport) return;
+		viewport.__series = this;
+		const n = (worldPoints.length / 3) | 0;
+		let length = 0;
+		for (let i = 0; i < n - 1; i++) {
+			const a = i * 3, b = (i + 1) * 3;
+			length += Math.hypot(worldPoints[b] - worldPoints[a], worldPoints[b + 1] - worldPoints[a + 1], worldPoints[b + 2] - worldPoints[a + 2]);
+		}
+		const spacing = Serie.CENTERLINE_CONTROL_POINT_SPACING;
+		const numControl = Math.max(Serie.CENTERLINE_NUM_CONTROL_MIN, Math.min(Serie.CENTERLINE_NUM_CONTROL_MAX, Math.round(2 + length / spacing)));
+		const numControlClamped = Math.min(numControl, Math.max(2, n));
+		const controlPoints = [];
+		for (let i = 0; i < numControlClamped; i++) {
+			const idx = i === numControlClamped - 1 ? n - 1 : Math.floor((i * (n - 1)) / (numControlClamped - 1));
+			controlPoints.push([worldPoints[idx * 3], worldPoints[idx * 3 + 1], worldPoints[idx * 3 + 2]]);
+		}
+		viewport.__centerlineState = {
+			controlPoints,
+			startLinearIndex: worldPoints.startLinearIndex,
+			endLinearIndex: worldPoints.endLinearIndex,
+		};
+		addCenterlineToViewport3D(viewport, null, { controlPoints, showEndpoints: true });
+		this._attachCenterlineDragListeners(viewport);
+		this.renderingEngine.renderViewports([viewport.id]);
+	}
 
-		// const content = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+	/**
+	 * Attach pointer listeners to the 3D viewport canvas for dragging centerline spline control spheres.
+	 * @param {import('@cornerstonejs/core').VolumeViewport3D} viewport
+	 */
+	_attachCenterlineDragListeners (viewport)
+	{
+		if (viewport.__centerlineDragListenersAttached) return;
+		const canvas = viewport.getCanvas?.() ?? viewport.canvas;
+		if (!canvas) return;
+		const HIT_PX = 24;
+		let dragging = null;
 
-		// downloadZip(content, this.segmentations[this.current_segm].name);
+		const getCanvasPos = (evt) => {
+			const rect = canvas.getBoundingClientRect();
+			return [evt.clientX - rect.left, evt.clientY - rect.top];
+		};
+
+		const hitControlPoint = (canvasPos, state) => {
+			const pts = state.controlPoints;
+			if (!pts?.length) return null;
+			let bestIdx = null;
+			let bestDist = HIT_PX;
+			for (let i = 0; i < pts.length; i++) {
+				const c = viewport.worldToCanvas(pts[i]);
+				const d = Math.sqrt((canvasPos[0] - c[0]) ** 2 + (canvasPos[1] - c[1]) ** 2);
+				if (d < bestDist) { bestDist = d; bestIdx = i; }
+			}
+			return bestIdx;
+		};
+
+		const onPointerDown = (evt) => {
+			const state = viewport.__centerlineState;
+			if (!state?.controlPoints?.length) return;
+			const canvasPos = getCanvasPos(evt);
+			const index = hitControlPoint(canvasPos, state);
+			if (index == null) return;
+			evt.preventDefault();
+			evt.stopPropagation();
+			const cam = viewport.getCamera();
+			const pos = cam.position;
+			const focal = cam.focalPoint;
+			let nx = focal[0] - pos[0], ny = focal[1] - pos[1], nz = focal[2] - pos[2];
+			const len = Math.hypot(nx, ny, nz) || 1;
+			nx /= len; ny /= len; nz /= len;
+			const pt = state.controlPoints[index];
+			dragging = { index, planePoint: [pt[0], pt[1], pt[2]], planeNormal: [nx, ny, nz], downCanvasPos: [canvasPos[0], canvasPos[1]] };
+			canvas.setPointerCapture?.(evt.pointerId);
+		};
+
+		const prefix = 'centerline-' + (viewport.id || '3d');
+
+		const onPointerMove = (evt) => {
+			if (!dragging) return;
+			const state = viewport.__centerlineState;
+			const serie = viewport.__series;
+			if (!state?.controlPoints || !serie) return;
+			evt.preventDefault();
+			const canvasPos = getCanvasPos(evt);
+			const cam = viewport.getCamera();
+			const rayOrigin = cam.position;
+			const rayEnd = viewport.canvasToWorld(canvasPos);
+			let dx = rayEnd[0] - rayOrigin[0], dy = rayEnd[1] - rayOrigin[1], dz = rayEnd[2] - rayOrigin[2];
+			const rayLen = Math.hypot(dx, dy, dz) || 1;
+			dx /= rayLen; dy /= rayLen; dz /= rayLen;
+			const [px, py, pz] = dragging.planePoint;
+			const [nx, ny, nz] = dragging.planeNormal;
+			const denom = nx * dx + ny * dy + nz * dz;
+			if (Math.abs(denom) < 1e-6) return;
+			const t = ((px - rayOrigin[0]) * nx + (py - rayOrigin[1]) * ny + (pz - rayOrigin[2]) * nz) / denom;
+			const world = [
+				rayOrigin[0] + t * dx,
+				rayOrigin[1] + t * dy,
+				rayOrigin[2] + t * dz,
+			];
+			const idx = dragging.index;
+			state.controlPoints[idx] = world;
+			const splinePoints = interpolateCatmullRomSpline(state.controlPoints);
+			if (updateCenterlineLinePoints(viewport, splinePoints) && updateSphereActorCenter(viewport, prefix + '-sphere-' + idx, world)) {
+				serie.renderingEngine.renderViewports([viewport.id]);
+			}
+		};
+
+		const CENTERLINE_POPUP_ID = 'centerline-point-info-popup';
+
+		function convexHull2D (points) {
+			if (points.length < 3) return points.slice();
+			const idx = points.reduce((best, p, i) => (p[1] < points[best][1] || (p[1] === points[best][1] && p[0] < points[best][0])) ? i : best, 0);
+			const o = points[idx];
+			const rest = points.map((p, i) => ({ p, i })).filter((_, i) => i !== idx);
+			rest.sort((a, b) => Math.atan2(a.p[1] - o[1], a.p[0] - o[0]) - Math.atan2(b.p[1] - o[1], b.p[0] - o[0]));
+			const hull = [o];
+			for (const { p } of rest) {
+				while (hull.length >= 2) {
+					const a = hull[hull.length - 2], b = hull[hull.length - 1];
+					const cross = (b[0] - a[0]) * (p[1] - b[1]) - (b[1] - a[1]) * (p[0] - b[0]);
+					if (cross <= 0) hull.pop();
+					else break;
+				}
+				hull.push(p);
+			}
+			return hull;
+		}
+
+		function contourToSvgPath (result, size = 80, pad = 4) {
+			const contourPoints2D = result.contourPoints2D;
+			if (!contourPoints2D?.length) return '';
+			const hull = convexHull2D(contourPoints2D);
+			const allPoints = hull.concat(result.maxDiameterEndpoints2D || [], result.minDiameterEndpoints2D || []);
+			let minU = allPoints[0][0], maxU = allPoints[0][0], minV = allPoints[0][1], maxV = allPoints[0][1];
+			for (let i = 1; i < allPoints.length; i++) {
+				minU = Math.min(minU, allPoints[i][0]); maxU = Math.max(maxU, allPoints[i][0]);
+				minV = Math.min(minV, allPoints[i][1]); maxV = Math.max(maxV, allPoints[i][1]);
+			}
+			const rangeU = maxU - minU || 1, rangeV = maxV - minV || 1;
+			const scale = (size - 2 * pad) / Math.max(rangeU, rangeV);
+			const sx = (u) => pad + (u - minU) * scale;
+			const sy = (v) => size - pad - (v - minV) * scale;
+			const d = hull.map(([u, v]) => `${sx(u)},${sy(v)}`).join(' ');
+			let lines = `<polygon points="${d}" fill="rgba(100,160,220,0.25)" stroke="#6b9bd1" stroke-width="1"/>`;
+			if (result.maxDiameterEndpoints2D?.length === 2) {
+				const [p1, p2] = result.maxDiameterEndpoints2D;
+				lines += `<line x1="${sx(p1[0])}" y1="${sy(p1[1])}" x2="${sx(p2[0])}" y2="${sy(p2[1])}" stroke="#e07c3e" stroke-width="2"/>`;
+			}
+			if (result.minDiameterEndpoints2D?.length === 2) {
+				const [p1, p2] = result.minDiameterEndpoints2D;
+				lines += `<line x1="${sx(p1[0])}" y1="${sy(p1[1])}" x2="${sx(p2[0])}" y2="${sy(p2[1])}" stroke="#5cb85c" stroke-width="2"/>`;
+			}
+			return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="display:block;vertical-align:middle;background:rgba(0,0,0,0.2);border-radius:4px;">${lines}</svg>`;
+		}
+
+		const showCenterlinePointPopup = (index, result, numPoints) => {
+			const existing = document.getElementById(CENTERLINE_POPUP_ID);
+			if (existing) existing.remove();
+			const popup = document.createElement('div');
+			popup.id = CENTERLINE_POPUP_ID;
+			popup.style.cssText = 'position:absolute;top:12px;left:12px;z-index:1000;background:#1c1c1e;color:#eee;padding:10px 12px;border-radius:6px;font:13px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);display:flex;align-items:flex-start;gap:10px;';
+			const svgHtml = result.contourPoints2D?.length ? contourToSvgPath(result) : '';
+			popup.innerHTML = `
+				${svgHtml}
+				<div>
+					<div>Point ${index + 1}/${numPoints} · Area ${result.area.toFixed(2)} mm² · Max Ø ${result.maxDiameter.toFixed(2)} mm · Min Ø ${result.minDiameter.toFixed(2)} mm</div>
+					<button type="button" style="margin-top:6px;background:#444;border:none;color:#ccc;cursor:pointer;padding:2px 8px;border-radius:4px;font-size:12px;">Close</button>
+				</div>
+			`;
+			popup.querySelector('button').onclick = () => popup.remove();
+			const container = viewport.element;
+			if (container && container.style.position !== 'static') {
+				container.style.position = container.style.position || 'relative';
+				container.appendChild(popup);
+			} else {
+				document.body.appendChild(popup);
+			}
+		};
+
+		const outputCrossSectionAtPoint = (index) => {
+			const state = viewport.__centerlineState;
+			const serie = viewport.__series;
+			if (!state?.controlPoints?.length || !serie?.volume_segm?.voxelManager || !serie?.volume?.imageData) return;
+			const pt = state.controlPoints[index];
+			const tangent = getTangentAtControlPoint(state.controlPoints, index);
+			const segScalarData = serie.volume_segm.voxelManager.getCompleteScalarDataArray();
+			const imageData = serie.volume.imageData;
+			const dimensions = imageData.getDimensions();
+			const segmentValue = Number(cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(serie.volume_segm.volumeId));
+			const result = crossSectionAtCenterlinePoint(pt, tangent, segScalarData, dimensions, segmentValue, imageData);
+			console.log(`Point ${index + 1}/${state.controlPoints.length}`, result);
+			if (typeof window.__centerlineCrossSectionOutput === 'function') {
+				window.__centerlineCrossSectionOutput({ index, ...result });
+			} else {
+				showCenterlinePointPopup(index, result, state.controlPoints.length);
+			}
+		};
+
+		const onPointerUp = (evt) => {
+			if (!dragging) return;
+			evt.preventDefault();
+			const wasDragging = dragging;
+			const state = viewport.__centerlineState;
+			const serie = viewport.__series;
+			const canvasPos = getCanvasPos(evt);
+			const move = Math.hypot(canvasPos[0] - (wasDragging.downCanvasPos?.[0] ?? canvasPos[0]), canvasPos[1] - (wasDragging.downCanvasPos?.[1] ?? canvasPos[1]));
+			dragging = null;
+			canvas.releasePointerCapture?.(evt.pointerId);
+
+			const isStart = wasDragging.index === 0;
+			const isEnd = state?.controlPoints?.length && wasDragging.index === state.controlPoints.length - 1;
+			if ((isStart || isEnd) && serie?.volume_segm?.voxelManager && serie?.volume?.imageData) {
+				const world = state.controlPoints[wasDragging.index];
+				const segScalarData = serie.volume_segm.voxelManager.getCompleteScalarDataArray();
+				const imageData = serie.volume.imageData;
+				const dimensions = imageData.getDimensions();
+				const segmentValue = Number(cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(serie.volume_segm.volumeId));
+				const lin = worldToNearestSegmentVoxel(world, segScalarData, dimensions, segmentValue, imageData);
+				if (lin != null) {
+					const startLin = isStart ? lin : (state.startLinearIndex ?? null);
+					const endLin = isEnd ? lin : (state.endLinearIndex ?? null);
+					const worldPoints = computeCenterline(segScalarData, dimensions, segmentValue, imageData, startLin, endLin);
+					if (worldPoints.length >= 6) {
+						const n = (worldPoints.length / 3) | 0;
+						let length = 0;
+						for (let i = 0; i < n - 1; i++) {
+							const a = i * 3, b = (i + 1) * 3;
+							length += Math.hypot(worldPoints[b] - worldPoints[a], worldPoints[b + 1] - worldPoints[a + 1], worldPoints[b + 2] - worldPoints[a + 2]);
+						}
+						const spacing = Serie.CENTERLINE_CONTROL_POINT_SPACING;
+						const numControl = Math.max(Serie.CENTERLINE_NUM_CONTROL_MIN, Math.min(Serie.CENTERLINE_NUM_CONTROL_MAX, Math.round(2 + length / spacing)));
+						const numControlClamped = Math.min(numControl, Math.max(2, n));
+						const controlPoints = [];
+						for (let i = 0; i < numControlClamped; i++) {
+							const idx = i === numControlClamped - 1 ? n - 1 : Math.floor((i * (n - 1)) / (numControlClamped - 1));
+							controlPoints.push([worldPoints[idx * 3], worldPoints[idx * 3 + 1], worldPoints[idx * 3 + 2]]);
+						}
+						viewport.__centerlineState = {
+							controlPoints,
+							startLinearIndex: worldPoints.startLinearIndex,
+							endLinearIndex: worldPoints.endLinearIndex,
+						};
+						addCenterlineToViewport3D(viewport, null, { controlPoints, showEndpoints: true });
+						serie.renderingEngine.renderViewports([viewport.id]);
+						return;
+					}
+				}
+			}
+		};
+
+		const onDoubleClick = (evt) => {
+			const state = viewport.__centerlineState;
+			if (!state?.controlPoints?.length) return;
+			const canvasPos = getCanvasPos(evt);
+			const index = hitControlPoint(canvasPos, state);
+			if (index != null) {
+				evt.preventDefault();
+				outputCrossSectionAtPoint(index);
+			}
+		};
+
+		canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
+		canvas.addEventListener('pointermove', onPointerMove, { passive: false });
+		canvas.addEventListener('pointerup', onPointerUp, { passive: false });
+		canvas.addEventListener('pointerleave', onPointerUp, { passive: false });
+		canvas.addEventListener('dblclick', onDoubleClick, { passive: false });
+		viewport.__centerlineDragListenersAttached = true;
 	}
 
 	/**
@@ -2314,21 +2355,20 @@ export default class Serie extends SerieBase
 
 		try {
 			// Get volume data
-			const volumeData = this.volume.imageData;
-			const scalarData = this.volume.scalarData;
 			const dimensions = this.volume.dimensions;
 			const spacing = this.volume.spacing;
 			const origin = this.volume.origin;
 			const direction = this.volume.direction;
 
 			// Prepare data array
-			let dataArray = this.volume_segm.scalarData;
+			let dataArray = null;
+
 			if (segmentation) {
 				// Use segmentation data if available
 				dataArray = new Float32Array(this.volume_segm.voxelManager.getCompleteScalarDataArray());
 			} else {
 				// Use original volume data
-				dataArray = new Float32Array(scalarData);
+				dataArray = new Float32Array(this.volume.voxelManager.getCompleteScalarDataArray());
 			}
 
 			let cal_min = Infinity;
@@ -2599,9 +2639,7 @@ export default class Serie extends SerieBase
 			{
 				name: segm_name,
 
-				a: new Float32Array(this.volume.scalarData.length),
-				b: new Float32Array(this.volume.scalarData.length),
-				c: new Uint32Array(this.volume.scalarData.length),
+				a: new Float32Array(this.volume.voxelManager.getCompleteScalarDataArray().length),
 			};
 		}
 		else
@@ -2621,47 +2659,24 @@ export default class Serie extends SerieBase
 		return segm;
 	}
 
-	recomputeBoundingBox ()
-	{
-		for (let i = 0; i < this.volume.dimensions[0]; ++i)
-		{
-			for (let j = 0; j < this.volume.dimensions[1]; ++j)
-			{
-				for (let k = 0; k < this.volume.dimensions[2]; ++k)
-				{
-					if (this.volume_segm.scalarData[this.ijkToLinear(i, j, k)])
-					{
-						// TODO: make separate bounding box for each segmentation.
-						bounding_box[0].min = Math.min(bounding_box[0].min, i);
-						bounding_box[0].max = Math.max(bounding_box[0].max, i);
-						bounding_box[1].min = Math.min(bounding_box[1].min, j);
-						bounding_box[1].max = Math.max(bounding_box[1].max, j);
-						bounding_box[2].min = Math.min(bounding_box[2].min, k);
-						bounding_box[2].max = Math.max(bounding_box[2].max, k);
-					}
-				}
-			}
-		}
-	}
-
 	activateSegmentation (segm_index)
 	{
 		let segm = this.segmentations[this.current_segm];
 
-		if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-		{
-			segm.a.set(this.volume_segm.scalarData);
-		}
-		else
-		{
-			this.segmentationImageIds.forEach
-			(
-				(id, id_index) =>
-				{
-					segm.a.set(cornerstone.cache.getImage(id).getPixelData(), id_index === 0 ? 0 : cornerstone.cache.getImage(this.segmentationImageIds[id_index - 1]).getPixelData().length);
-				},
-			);
-		}
+		// if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
+		// {
+		// 	segm.a.set(this.volume_segm.scalarData);
+		// }
+		// else
+		// {
+		// 	this.segmentationImageIds.forEach
+		// 	(
+		// 		(id, id_index) =>
+		// 		{
+		// 			segm.a.set(cornerstone.cache.getImage(id).getPixelData(), id_index === 0 ? 0 : cornerstone.cache.getImage(this.segmentationImageIds[id_index - 1]).getPixelData().length);
+		// 		},
+		// 	);
+		// }
 
 		this.current_segm = segm_index;
 
@@ -2669,26 +2684,24 @@ export default class Serie extends SerieBase
 
 		segm = this.segmentations[this.current_segm];
 
-		if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-		{
-			this.volume_segm.scalarData.set(segm.a);
+		// if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
+		// {
+		// 	this.volume_segm.scalarData.set(segm.a);
+		// }
+		// else
+		// {
+		// 	this.segmentationImageIds.forEach
+		// 	(
+		// 		(id, id_index) =>
+		// 		{
+		// 			const begin = id_index === 0 ? 0 : cornerstone.cache.getImage(this.segmentationImageIds[id_index - 1]).getPixelData().length;
 
-			this.recomputeBoundingBox();
-		}
-		else
-		{
-			this.segmentationImageIds.forEach
-			(
-				(id, id_index) =>
-				{
-					const begin = id_index === 0 ? 0 : cornerstone.cache.getImage(this.segmentationImageIds[id_index - 1]).getPixelData().length;
+		// 			const end = begin + cornerstone.cache.getImage(id).getPixelData().length;
 
-					const end = begin + cornerstone.cache.getImage(id).getPixelData().length;
-
-					cornerstone.cache.getImage(id).getPixelData().set(segm.a.subarray(begin, end));
-				},
-			);
-		}
+		// 			cornerstone.cache.getImage(id).getPixelData().set(segm.a.subarray(begin, end));
+		// 		},
+		// 	);
+		// }
 
 		activateSegmentationGUI(this, segm, segm_index);
 
@@ -2699,30 +2712,11 @@ export default class Serie extends SerieBase
 		catch (_) {}
 	}
 
-	clearSegmentation ()
+	async createVolumeSegmentations (segm_labelmap_id)
 	{
-		if (this.segmentation_type === __SEGMENTATION_TYPE_VOLUME__)
-		{
-			bounding_box[0].min = Infinity;
-			bounding_box[0].max = -Infinity;
-			bounding_box[1].min = Infinity;
-			bounding_box[1].max = -Infinity;
-			bounding_box[2].min = Infinity;
-			bounding_box[2].max = -Infinity;
+		const segm_labelmap = await cornerstone.volumeLoader.createAndCacheDerivedLabelmapVolume(this.volume.volumeId, { volumeId: segm_labelmap_id });
 
-			this.volume_segm.scalarData.fill(0);
-		}
-		else
-		{
-			this.segmentationImageIds.forEach(id => cornerstone.cache.getImage(id).getPixelData().fill(0));
-		}
-	}
-
-	async createVolumeSegmentation (volumeId)
-	{
-		const volume = await cornerstone.volumeLoader.createAndCacheDerivedLabelmapVolume(this.volume.volumeId, { volumeId });
-
-		volume.imageData
+		segm_labelmap.imageData
 			.setDirection
 			([
 				1, 0, 0,
@@ -2730,17 +2724,17 @@ export default class Serie extends SerieBase
 				0, 0, 1,
 			]);
 
-		volume.imageData.modified();
+		segm_labelmap.imageData.modified();
 
-		volume.direction.fill(0);
-		volume.direction[0] = 1;
-		volume.direction[4] = 1;
-		volume.direction[8] = 1;
+		segm_labelmap.direction.fill(0);
+		segm_labelmap.direction[0] = 1;
+		segm_labelmap.direction[4] = 1;
+		segm_labelmap.direction[8] = 1;
 
 		cornerstoneTools.segmentation.addSegmentations
 		([
 			{
-				segmentationId: volume.volumeId,
+				segmentationId: segm_labelmap.volumeId,
 
 				representation:
 				{
@@ -2748,14 +2742,14 @@ export default class Serie extends SerieBase
 
 					data:
 					{
-						volumeId: volume.volumeId,
-						referencedVolumeId: volumeId,
+						volumeId: segm_labelmap.volumeId,
+						// referencedVolumeId: this.volume.volumeId,
 					},
 				},
 			},
 
 			{
-				segmentationId: volume.volumeId + '_contour',
+				segmentationId: segm_labelmap.volumeId + '_contour',
 
 				representation:
 				{
@@ -2763,26 +2757,14 @@ export default class Serie extends SerieBase
 
 					data:
 					{
-						volumeId: volume.volumeId + '_contour',
+						volumeId: segm_labelmap.volumeId + '_contour',
 					},
 				},
 			},
 		]);
 
 		this.viewport_inputs
-			.forEach
-			(
-				viewport_input =>
-				{
-					cornerstoneTools.segmentation.removeSegmentationRepresentations
-					(
-						viewport_input.viewportId,
-						[{ segmentationId: volume.volumeId, type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap }]
-					);
-				},
-			);
-
-		this.viewport_inputs
+			.filter(viewport_input => viewport_input.type !== 'volume3d')
 			.forEach
 			(
 				viewport_input =>
@@ -2790,25 +2772,58 @@ export default class Serie extends SerieBase
 					cornerstoneTools.segmentation.addSegmentationRepresentations
 					(
 						viewport_input.viewportId,
-						[{ segmentationId: volume.volumeId + '_contour', type: cornerstoneTools.Enums.SegmentationRepresentations.Contour }]
+						[{ segmentationId: segm_labelmap.volumeId + '_contour', type: cornerstoneTools.Enums.SegmentationRepresentations.Contour }]
 					);
 				},
 			);
 
-		const segmentation_viewports = {};
+		// this.viewport_inputs
+		// 	.filter(viewport_input => viewport_input.type === 'volume3d')
+		// 	.forEach
+		// 	(
+		// 		viewport_input =>
+		// 		{
+		// 			cornerstoneTools.segmentation.addSegmentationRepresentations
+		// 			(
+		// 				viewport_input.viewportId,
+		// 				[{ segmentationId: segm.volumeId + '_contour', type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap }]
+		// 			);
+		// 		},
+		// 	);
 
-		this.viewport_inputs
-			.forEach
-			(
-				viewport_input =>
-				{
-					segmentation_viewports[viewport_input.viewportId] = [ { segmentationId: volume.volumeId } ];
-				},
-			);
+		const labelmap_viewports = {};
+		const surface_viewports = {};
+		const contour_viewports = {};
 
-		await cornerstoneTools.segmentation.addLabelmapRepresentationToViewportMap(segmentation_viewports);
+		this.viewport_inputs.forEach(({ viewportId }) => labelmap_viewports[viewportId] = [ { segmentationId: segm_labelmap.volumeId } ]);
+		this.viewport_inputs.filter(({ type }) => type === 'volume3d').forEach(({ viewportId }) => surface_viewports[viewportId] = [ { segmentationId: segm_labelmap.volumeId } ]);
+		// this.viewport_inputs.forEach(({ viewportId }) => contour_viewports[viewportId] = [ { segmentationId: segm_labelmap.volumeId } ]);
 
-		return volume;
+		await cornerstoneTools.segmentation.addLabelmapRepresentationToViewportMap(labelmap_viewports);
+		await cornerstoneTools.segmentation.addSurfaceRepresentationToViewportMap(surface_viewports);
+		// await cornerstoneTools.segmentation.addContourRepresentationToViewportMap(contour_viewports);
+
+		LOG(cornerstoneTools.segmentation)
+
+		window.__test__ = async () =>
+		{
+			await cornerstoneTools.segmentation.removeLabelmapRepresentation(this.viewport_inputs[0].viewportId, segm_labelmap.volumeId);
+			await cornerstoneTools.segmentation.addContourRepresentationToViewport(this.viewport_inputs[0].viewportId, [ { segmentationId: segm_labelmap.volumeId } ]);
+
+			this.renderingEngine.renderViewports([ this.viewport_inputs[0].viewportId ]);
+
+			LOG(cornerstoneTools.annotation.state)
+		};
+
+		window.__test2__ = async () =>
+		{
+			await cornerstoneTools.segmentation.removeContourRepresentation(this.viewport_inputs[0].viewportId, segm_labelmap.volumeId);
+			await cornerstoneTools.segmentation.addLabelmapRepresentationToViewport(this.viewport_inputs[0].viewportId, [ { segmentationId: segm_labelmap.volumeId } ]);
+
+			this.renderingEngine.renderViewports([ this.viewport_inputs[0].viewportId ]);
+		};
+
+		return segm_labelmap;
 	}
 
 	async setActiveSegmentation (segmentation_id)
@@ -2851,206 +2866,406 @@ export default class Serie extends SerieBase
 			);
 	}
 
-	renderThreeScene ()
+	/**
+	 * Compute vertex colors (RGB Uint8Array) for world-space points using the same
+	 * logic as applyVertexColors: scalar value from volume at each point, then
+	 * blue / blue-orange gradient / red based on thresholds.
+	 * @param {Float32Array|number[]} worldPoints - Flat array x,y,z, x,y,z, ...
+	 * @returns {Uint8Array} RGB per point, length = worldPoints.length
+	 */
+	getVertexColorsForWorldPoints (worldPoints)
 	{
-		this.three_renderer.render(this.three_scene, this.three_camera);
-	}
-
-	async doMarchingCubes ()
-	{
-		const calls =
-		[
+		if (!worldPoints?.length) return new Uint8Array(0);
+		function calculateMaskedStats (intensities, mask)
+		{
+			let sum = 0;
+			let count = 0;
+			const segmentedValues = [];
+			for (let i = 0; i < intensities.length; i++)
 			{
-				function_name: 'generateMesh',
-
-				function_args:
-				{
-					bounding_box:
-					{
-						i_min: 0,
-						i_max: this.volume.dimensions[0],
-						j_min: 0,
-						j_max: this.volume.dimensions[1],
-						k_min: 0,
-						k_max: this.volume.dimensions[2],
-					},
-
-					image_data:
-					{
-						spacing: this.volume.imageData.getSpacing(),
-						extent: this.volume.imageData.getExtent(),
-						origin: this.volume.imageData.getOrigin(),
-						dimensions: this.volume.imageData.getDimensions(),
-					},
-
-					marching_cubes:
-					{
-						contourValue: 1,
-						mergePoints: true,
-						computeNormals: false,
-					},
-
-					smooth_filter:
-					{
-						nonManifoldSmoothing: 0,
-						// numberOfIterations: 100,
-						// passBand: 0.002,
-						numberOfIterations: this.smoothing,
-						passBand: 0.003,
-					},
-				},
+				if (mask[i] !== 0) { sum += intensities[i]; segmentedValues.push(intensities[i]); ++count; }
 			}
-		];
-
-		const { points, polys, colors } = (await this.runCommonWorker(0, { calls })).data;
-
-		this.vertices = points;
-		this.colors = colors;
-		this.indices = polys;
-
-		// this.gui_options.data.volume = message.data.volume;
-
-		try
-		{
-			this.updateMesh(true);
+			if (count === 0) return { mean: 0, stdDev: 0 };
+			const mean = sum / count;
+			const squareDiffsSum = segmentedValues.reduce((acc, val) => { const diff = val - mean; return acc + (diff * diff); }, 0);
+			const variance = squareDiffsSum / count;
+			const stdDev = Math.sqrt(variance);
+			return { mean, stdDev };
 		}
-		catch (evt)
+		const stats = calculateMaskedStats(this.volume.voxelManager.getCompleteScalarDataArray(), this.volume_segm.voxelManager.getCompleteScalarDataArray());
+		const volumeScalarData = this.volume.voxelManager.getCompleteScalarDataArray();
+		const imageData = this.volume.imageData;
+		const dimensions = imageData.getDimensions();
+		const [width, height, depth] = dimensions;
+		const thresholdValue1 = this.blue_red1;
+		const thresholdValue2 = this.blue_red2;
+		const numPoints = worldPoints.length / 3;
+		const colors = new Uint8Array(numPoints * 3);
+		const pts = worldPoints instanceof Float32Array ? worldPoints : new Float32Array(worldPoints);
+		for (let i = 0; i < numPoints; ++i)
 		{
-			LOG(evt)
+			const worldPoint = [pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2]];
+			const indexPoint = imageData.worldToIndex(worldPoint);
+			const i_idx = Math.max(0, Math.min(Math.floor(indexPoint[0]), width - 1));
+			const j_idx = Math.max(0, Math.min(Math.floor(indexPoint[1]), height - 1));
+			const k_idx = Math.max(0, Math.min(Math.floor(indexPoint[2]), depth - 1));
+			const linearIndex = i_idx + j_idx * width + k_idx * width * height;
+			const scalarValue = volumeScalarData[linearIndex] / stats.mean;
+			if (scalarValue < thresholdValue1)
+			{
+				colors[i * 3] = 0; colors[i * 3 + 1] = 0; colors[i * 3 + 2] = 255;
+			}
+			else if (scalarValue < thresholdValue2)
+			{
+				const range = thresholdValue2 - thresholdValue1;
+				const t = range > 0 ? (scalarValue - thresholdValue1) / range : 0;
+				colors[i * 3] = Math.round(135 + (255 - 135) * t);
+				colors[i * 3 + 1] = Math.round(206 + (165 - 206) * t);
+				colors[i * 3 + 2] = Math.round(250 + (0 - 250) * t);
+			}
+			else
+			{
+				colors[i * 3] = 255; colors[i * 3 + 1] = 0; colors[i * 3 + 2] = 0;
+			}
+		}
+		return colors;
+	}
+
+	/**
+	 * Refresh VTK contour line actors on orthographic viewports where lines
+	 * mode is on (__vtkContourLinesVisible) and __vtkContourLinesCache exists.
+	 * Uses vertex colors when vertexColorsEnabled, else segment colors.
+	 */
+	refreshVTKContourLinesOnOrthoViewports (_viewports = null)
+	{
+		const viewports = _viewports || this.renderingEngine.getViewports();
+		if (this.vertexColorsEnabled)
+		{
+			const getPointColors = (points) => this.getVertexColorsForWorldPoints(points);
+			for (const vp of viewports)
+			{
+				const cache = vp.__vtkContourLinesCache;
+				if (!cache) continue;
+				if (!vp.__vtkContourLinesVisible) continue;
+				const sliceIndex = typeof vp.getSliceIndex === 'function' ? vp.getSliceIndex() : undefined;
+				if (sliceIndex === undefined) continue;
+				const polyDataResults = cache.get(sliceIndex);
+				if (polyDataResults)
+				{
+					addContourLineActorsToViewport(vp, polyDataResults, { getPointColors });
+				}
+			}
+		}
+		else
+		{
+			const getSegmentColor = (vp, segmentIndex) =>
+			{
+				const c = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(vp.id, this.volume_segm.volumeId, segmentIndex);
+				return c ? [c[0], c[1], c[2]] : [255, 255, 255];
+			};
+			for (const vp of viewports)
+			{
+				const cache = vp.__vtkContourLinesCache;
+				if (!cache) continue;
+				if (!vp.__vtkContourLinesVisible) continue;
+				const sliceIndex = typeof vp.getSliceIndex === 'function' ? vp.getSliceIndex() : undefined;
+				if (sliceIndex === undefined) continue;
+				const polyDataResults = cache.get(sliceIndex);
+				if (polyDataResults)
+				{
+					addContourLineActorsToViewport(vp, polyDataResults, { getSegmentColor: (segmentIndex) => getSegmentColor(vp, segmentIndex) });
+				}
+			}
 		}
 	}
 
-	saveScene ()
+	applyVertexColors (threshold1, threshold2)
 	{
-		bounding_box[0] = { min: Infinity, max: -Infinity };
-		bounding_box[1] = { min: Infinity, max: -Infinity };
-		bounding_box[2] = { min: Infinity, max: -Infinity };
-
-		cornerstoneTools.annotation.state.removeAllAnnotations(cornerstone.getEnabledElement(document.querySelector('#i')));
-		cornerstoneTools.annotation.state.removeAllAnnotations(cornerstone.getEnabledElement(document.querySelector('#j')));
-		cornerstoneTools.annotation.state.removeAllAnnotations(cornerstone.getEnabledElement(document.querySelector('#k')));
-
-		cornerstoneTools.utilities.triggerAnnotationRenderForViewportIds(this.renderingEngine, this.viewport_inputs.map(_ => _.viewportId));
-
-		// this.volume_segm.scalarData
-		for
-		(
-			let i = 0, i_max = this.volume_segm.scalarData.length;
-			i < i_max;
-			++i
-		)
+		this.blue_red1 = threshold1;
+		this.blue_red2 = threshold2;
+		function calculateMaskedStats (intensities, mask)
 		{
-			this.volume_segm.scalarData[i] = (this.volume_segm.scalarData[i] === 1 ? 2 : this.volume_segm.scalarData[i]);
-		}
+				let sum = 0;
+				let count = 0;
+				const segmentedValues = [];
 
-		cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
-
-		this.saved_scene =
-			this.three_scene.children
-				.filter(child => (child.constructor === THREE.Mesh))
-				.map(mesh => mesh.clone());
-	}
-
-	updateMesh (removeCaps)
-	{
-		this.three_scene.clear();
-
-		if (this.saved_scene)
-		{
-			this.three_scene.add(...this.saved_scene.map(mesh => mesh.clone()));
-		}
-
-		const geometry = new THREE.BufferGeometry();
-		geometry.setAttribute('position', new THREE.BufferAttribute(this.vertices, 3));
-		this.colors && geometry.setAttribute('color', new THREE.BufferAttribute(this.colors.slice(), 3));
-		geometry.setIndex(new THREE.BufferAttribute(this.indices, 1));
-		geometry.computeVertexNormals();
-
-		// if (removeCaps)
-		// {
-		// 	geometry.computeBoundingBox();
-
-		// 	const v = new THREE.Vector3();
-		// 	const X = new THREE.Vector3(1, 0, 0);
-		// 	const Y = new THREE.Vector3(0, 1, 0);
-		// 	const Z = new THREE.Vector3(0, 0, 1);
-		// 	const p = geometry.attributes.position.array
-		// 	const n = geometry.attributes.normal.array;
-		// 	const c = geometry.attributes.color?.array;
-
-		// 	for (let i = 0; i < n.length; i += 3)
-		// 	{
-		// 		v.set(n[i + 0], n[i + 1], n[i + 2]);
-
-		// 		if
-		// 		(
-		// 			c &&
-		// 			(
-		// 				(
-		// 					Math.abs(v.dot(X)) > 0.999 &&
-
-		// 					(
-		// 						p[i + 0] === geometry.boundingBox.min.x ||
-		// 						p[i + 0] === geometry.boundingBox.max.x
-		// 					)
-		// 				) ||
-		// 				(
-		// 					Math.abs(v.dot(Y)) > 0.999 &&
-
-		// 					(
-		// 						p[i + 1] === geometry.boundingBox.min.y ||
-		// 						p[i + 1] === geometry.boundingBox.max.y
-		// 					)
-		// 				) ||
-		// 				(
-		// 					Math.abs(v.dot(Z)) > 0.999 &&
-
-		// 					(
-		// 						p[i + 2] === geometry.boundingBox.min.z ||
-		// 						p[i + 2] === geometry.boundingBox.max.z
-		// 					)
-		// 				)
-		// 			)
-		// 		)
-		// 		{
-		// 			c[i + 0] = -1;
-		// 		}
-		// 	}
-		// }
-
-		const mesh = new THREE.Mesh(geometry, removeCaps ? material2 : material1);
-
-		this.three_scene.add(this.three_camera);
-		this.three_scene.add(mesh);
-
-		this.renderThreeScene();
-	}
-
-	centerThreeScene ()
-	{
-		const center = new THREE.Vector3();
-
-		const meshes =
-			this.three_scene.children
-				.filter(child => (child.constructor === THREE.Mesh));
-
-		meshes
-			.forEach
-				(
-					mesh =>
+				// Step 1: Filter intensities by mask and calculate sum for Mean
+				for (let i = 0; i < intensities.length; i++)
+				{
+					if (mask[i] !== 0)
 					{
-						mesh.geometry.computeBoundingSphere();
+						sum += intensities[i];
+						segmentedValues.push(intensities[i]);
+						++count;
+					}
+				}
 
-						center.add(mesh.geometry.boundingSphere.center);
-					},
-				);
+				if (count === 0) return { mean: 0, stdDev: 0 };
 
-		center.divideScalar(meshes.length);
+				const mean = sum / count;
 
-		this.three_orbit_controls.target.copy(center);
+				// Step 2: Calculate Variance for Standard Deviation
+				const squareDiffsSum = segmentedValues.reduce((acc, val) => {
+						const diff = val - mean;
+						return acc + (diff * diff);
+				}, 0);
 
-		this.three_orbit_controls.update();
+				const variance = squareDiffsSum / count;
+				const stdDev = Math.sqrt(variance);
 
-		this.renderThreeScene();
+				return { mean, stdDev };
+		}
+
+		const stats = calculateMaskedStats(this.volume.voxelManager.getCompleteScalarDataArray(), this.volume_segm.voxelManager.getCompleteScalarDataArray());
+
+		const viewport = this.renderingEngine.getViewports().find(viewport => viewport instanceof cornerstone.VolumeViewport3D);
+
+		// Get volume data and metadata
+		const volumeScalarData = this.volume.voxelManager.getCompleteScalarDataArray();
+		const imageData = this.volume.imageData;
+		const dimensions = imageData.getDimensions();
+		const [width, height, depth] = dimensions;
+
+		// Get data range for threshold calculation
+		const dataRange = this.volume.voxelManager.getRange();
+		const [minValue, maxValue] = dataRange;
+
+		// Use provided threshold or default to midpoint
+		// const thresholdValue = threshold !== null ? threshold : (minValue + maxValue) / 2;
+		const thresholdValue1 = threshold1;
+		const thresholdValue2 = threshold2;
+
+		Array.from(viewport._actors.values()).filter(actor => actor.representationUID?.includes(this.volume_segm.volumeId + '-Surface'))
+			.forEach
+			(
+				actor =>
+				{
+					const polyData = actor.actor.getMapper().getInputData();
+					const points = polyData.getPoints();
+					const numPoints = polyData.getNumberOfPoints();
+					const colors = new Uint8Array(numPoints * 3);
+
+					for (let i = 0; i < numPoints; ++i)
+					{
+						// Get world coordinates of the vertex
+						const worldPoint = points.getPoint(i);
+
+						// Convert world coordinates to index coordinates
+						const indexPoint = imageData.worldToIndex(worldPoint);
+
+						// Clamp to valid volume bounds
+						const i_idx = Math.max(0, Math.min(Math.floor(indexPoint[0]), width - 1));
+						const j_idx = Math.max(0, Math.min(Math.floor(indexPoint[1]), height - 1));
+						const k_idx = Math.max(0, Math.min(Math.floor(indexPoint[2]), depth - 1));
+
+						// Convert 3D index to linear index (VTK uses column-major order: i + j*width + k*width*height)
+						const linearIndex = i_idx + j_idx * width + k_idx * width * height;
+
+						// Sample volume data
+						const scalarValue = volumeScalarData[linearIndex] / stats.mean;
+
+						// // Normalize scalar value to 0-255 range and map to grayscale
+						// // You can modify this to use a colormap instead
+						// const normalizedValue = valueRange > 0
+						// 	? Math.max(0, Math.min(255, Math.round(((scalarValue - minValue) / valueRange) * 255)))
+						// 	: 128;
+
+						if (scalarValue < thresholdValue1)
+						{
+							colors[i * 3]     = 0;
+							colors[i * 3 + 1] = 0;
+							colors[i * 3 + 2] = 255;
+						}
+						else if (scalarValue < thresholdValue2)
+						{
+							const range = thresholdValue2 - thresholdValue1;
+							const t = range > 0 ? (scalarValue - thresholdValue1) / range : 0;
+							// gradient: light blue (135,206,250) -> orange (255,165,0)
+							colors[i * 3]     = Math.round(135 + (255 - 135) * t);
+							colors[i * 3 + 1] = Math.round(206 + (165 - 206) * t);
+							colors[i * 3 + 2] = Math.round(250 + (0 - 250) * t);
+						}
+						else
+						{
+							colors[i * 3]     = 255;
+							colors[i * 3 + 1] = 0;
+							colors[i * 3 + 2] = 0;
+						}
+					}
+
+					polyData.getPointData().setScalars(vtkDataArray.newInstance({ name: 'Colors', values: colors, numberOfComponents: 3 }));
+				},
+			);
+
+		this.renderingEngine.renderViewports([ viewport.id ]);
+
+		// Refresh VTK contour lines on orthographic viewports (same as vtkLinesBtn color update)
+		this.refreshVTKContourLinesOnOrthoViewports();
+	}
+
+	applySegmentColors ()
+	{
+		const viewport = this.renderingEngine.getViewports().find(viewport => viewport instanceof cornerstone.VolumeViewport3D);
+
+		Array.from(viewport._actors.values()).filter(actor => actor.representationUID?.includes(this.volume_segm.volumeId + '-Surface')).forEach
+		(
+			actor =>
+			{
+				const segment_index = actor.representationUID.split('-')[2];
+
+				const polyData = actor.actor.getMapper().getInputData();
+
+				const numPoints = polyData.getNumberOfPoints();
+				const colors = new Uint8Array(numPoints * 3);
+
+				for (let i = 0; i < numPoints; ++i)
+				{
+					const color = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, this.volume_segm.volumeId, segment_index);
+
+					colors[i * 3]     = color[0];
+					colors[i * 3 + 1] = color[1];
+					colors[i * 3 + 2] = color[2];
+				}
+
+				polyData.getPointData().setScalars(vtkDataArray.newInstance({ name: 'Colors', values: colors, numberOfComponents: 3 }));
+			},
+		);
+
+		this.renderingEngine.renderViewports([ viewport.id ]);
+
+		// Refresh VTK contour lines to use segment colors again (same as vtkLinesBtn color update)
+		this.refreshVTKContourLinesOnOrthoViewports();
+	}
+
+	/**
+	 * Compute red triangle area, blue triangle area (by vertex-color thresholds), and segmentation volume.
+	 * @returns {{ redArea: number, blueArea: number, segmentationVolume: number }}
+	 */
+	getSegmentationStats ()
+	{
+		let redArea = 0;
+		let blueArea = 0;
+		const viewport = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
+		if (!viewport || !this.volume_segm?.voxelManager || !this.volume?.imageData) {
+			return { redArea: 0, blueArea: 0, segmentationVolume: 0 };
+		}
+		const segScalarData = this.volume_segm.voxelManager.getCompleteScalarDataArray();
+		const segmentValue = Number(cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(this.volume_segm.volumeId));
+		const dimensions = this.volume.imageData.getDimensions();
+		const [width, height, depth] = dimensions;
+		const spacing = this.volume.spacing;
+		const voxelVolume = (spacing[0] ?? 1) * (spacing[1] ?? 1) * (spacing[2] ?? 1);
+		let segmentationVolume = 0;
+		for (let i = 0; i < segScalarData.length; i++) {
+			if (segScalarData[i] === segmentValue) segmentationVolume += voxelVolume;
+		}
+
+		function calculateMaskedStats (intensities, mask) {
+			let sum = 0, count = 0;
+			const segmentedValues = [];
+			for (let i = 0; i < intensities.length; i++) {
+				if (mask[i] !== 0) { sum += intensities[i]; segmentedValues.push(intensities[i]); ++count; }
+			}
+			if (count === 0) return { mean: 1 };
+			return { mean: sum / count };
+		}
+		const stats = calculateMaskedStats(this.volume.voxelManager.getCompleteScalarDataArray(), segScalarData);
+		const volumeScalarData = this.volume.voxelManager.getCompleteScalarDataArray();
+		const imageData = this.volume.imageData;
+		const threshold1 = this.blue_red1;
+		const threshold2 = this.blue_red2;
+
+		const surfaceActors = Array.from(viewport._actors.values()).filter(a => a.representationUID?.includes(this.volume_segm.volumeId + '-Surface'));
+		for (const actor of surfaceActors) {
+			const polyData = actor.actor.getMapper().getInputData();
+			const points = polyData.getPoints();
+			const polysData = polyData.getPolys().getData();
+			const vertexScalars = [];
+			for (let i = 0; i < points.getNumberOfPoints(); i++) {
+				const worldPoint = points.getPoint(i);
+				const indexPoint = imageData.worldToIndex(worldPoint);
+				const i_idx = Math.max(0, Math.min(Math.floor(indexPoint[0]), width - 1));
+				const j_idx = Math.max(0, Math.min(Math.floor(indexPoint[1]), height - 1));
+				const k_idx = Math.max(0, Math.min(Math.floor(indexPoint[2]), depth - 1));
+				const linearIndex = i_idx + j_idx * width + k_idx * width * height;
+				const scalarValue = stats.mean ? volumeScalarData[linearIndex] / stats.mean : 0;
+				vertexScalars.push(scalarValue);
+			}
+			let offset = 0;
+			while (offset < polysData.length) {
+				const n = polysData[offset++];
+				if (n !== 3) { offset += n; continue; }
+				const i0 = polysData[offset++], i1 = polysData[offset++], i2 = polysData[offset++];
+				const s0 = vertexScalars[i0], s1 = vertexScalars[i1], s2 = vertexScalars[i2];
+				const redCount = (s0 >= threshold2 ? 1 : 0) + (s1 >= threshold2 ? 1 : 0) + (s2 >= threshold2 ? 1 : 0);
+				const blueCount = (s0 < threshold1 ? 1 : 0) + (s1 < threshold1 ? 1 : 0) + (s2 < threshold1 ? 1 : 0);
+				const p0 = points.getPoint(i0);
+				const p1 = points.getPoint(i1);
+				const p2 = points.getPoint(i2);
+				const ax = p1[0] - p0[0], ay = p1[1] - p0[1], az = p1[2] - p0[2];
+				const bx = p2[0] - p0[0], by = p2[1] - p0[1], bz = p2[2] - p0[2];
+				const crossX = ay * bz - az * by, crossY = az * bx - ax * bz, crossZ = ax * by - ay * bx;
+				const area = 0.5 * Math.sqrt(crossX * crossX + crossY * crossY + crossZ * crossZ);
+				if (redCount >= 2) redArea += area;
+				else if (blueCount >= 2) blueArea += area;
+			}
+		}
+		return { redArea, blueArea, segmentationVolume };
+	}
+
+	/**
+	 * Show a popup with red triangle area, blue triangle area, and segmentation volume; opened by a button.
+	 */
+	showSegmentationStatsPopup ()
+	{
+		const viewport = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
+		const container = viewport?.element ?? document.body;
+		const popupId = 'segmentation-stats-popup';
+		const existing = document.getElementById(popupId);
+		if (existing) existing.remove();
+		const stats = this.getSegmentationStats();
+		const popup = document.createElement('div');
+		popup.id = popupId;
+		popup.style.cssText = 'position:absolute;top:50px;left:12px;z-index:1000;background:#1c1c1e;color:#eee;padding:12px 14px;border-radius:6px;font:13px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);min-width:200px;';
+		popup.innerHTML = `
+			<div style="margin-bottom:8px;"><strong>Segmentation stats</strong></div>
+			<div>Red triangles area: <strong>${stats.redArea.toFixed(2)}</strong> mm²</div>
+			<div>Blue triangles area: <strong>${stats.blueArea.toFixed(2)}</strong> mm²</div>
+			<div>Segmentation volume: <strong>${stats.segmentationVolume.toFixed(2)}</strong> mm³</div>
+			<button type="button" style="margin-top:10px;background:#444;border:none;color:#ccc;cursor:pointer;padding:4px 10px;border-radius:4px;font-size:12px;">Close</button>
+		`;
+		popup.querySelector('button').onclick = () => popup.remove();
+		if (container.style.position === 'static' || !container.style.position) container.style.position = 'relative';
+		container.appendChild(popup);
+	}
+
+	toggleVertexColors ()
+	{
+		this.vertexColorsEnabled = !this.vertexColorsEnabled;
+
+		if (this.vertexColorsEnabled)
+		{
+			this.applyVertexColors(this.blue_red1, this.blue_red2);
+		}
+		else
+		{
+			this.applySegmentColors();
+		}
+	}
+
+	toggleVolumeActor ()
+	{
+		const viewport = this.renderingEngine.getViewports().find(viewport => viewport instanceof cornerstone.VolumeViewport3D);
+
+		if (!viewport)
+		{
+			return;
+		}
+
+		const actor = Array.from(viewport._actors.values()).find(actor => actor.referencedId === 'VOLUME0');
+
+		actor?.actor.setVisibility(!actor.actor.getVisibility());
+
+		this.renderingEngine.renderViewports([ viewport.id ]);
 	}
 }

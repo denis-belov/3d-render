@@ -335,7 +335,7 @@ body
     &-item
     {
       position: absolute;
-      overflow: hidden;
+      // overflow: hidden;
       z-index: 2;
       background-color: $theme-color;
       border-right: $border;
@@ -406,3 +406,8 @@ body
 //   margin: unset;
 //   width: 10px;
 // }
+
+.viewport-element
+{
+  overflow: visible !important;
+}

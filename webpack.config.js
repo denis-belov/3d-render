@@ -28,7 +28,7 @@ module.exports = (env, argv) =>
 		{
 			asyncWebAssembly: true,
 			// syncWebAssembly: true,
-			// topLevelAwait: true,
+			topLevelAwait: true,
 		},
 
 		entry: './src/index.js',
