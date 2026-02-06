@@ -18,13 +18,17 @@ import MCWorker from '../workers/mc.worker';
 import { addMarkupAPI, getMarkupAPI } from './api';
 
 import { getViewportUIVolume, getViewportUIVolume3D } from './viewport-ui';
-import { addContourLineActorsToViewport, addCenterlineToViewport3D, updateSphereActorCenter, updateCenterlineLinePoints } from './contourLinesAsVtk';
-import { computeCenterline, interpolateCatmullRomSpline, getTangentAtControlPoint, crossSectionAtCenterlinePoint, worldToNearestSegmentVoxel } from './centerlineFromSegmentation';
+import { addContourLineActorsToViewport, addCenterlineToViewport3D, updateSphereActorCenter, updateCenterlineLinePoints, createCenterlinePlaneActor, updateCenterlinePlane, setCenterlinePlaneContour } from './contourLinesAsVtk';
+import { computeCenterline, interpolateCatmullRomSpline, getTangentAtControlPoint, getPlaneBasis, crossSectionAtCenterlinePoint, crossSectionFromSurfaceMesh, intersectPlaneWithMesh, worldToNearestSegmentVoxel } from './centerlineFromSegmentation';
 
 import { cache, imageLoader, eventTarget } from '@cornerstonejs/core';
 import * as labelmapInterpolation from '@cornerstonejs/labelmap-interpolation';
 
 import { createSegmentationGUI, addSegmentationGUI, activateSegmentationGUI } from './createSegmentationGUI';
+import OneClickGrowCutObliqueTool from './OneClickGrowCutObliqueTool';
+import RegionSegmentPlusRelaxedTool from './RegionSegmentPlusRelaxedTool';
+import { suggestGrowCutParamsForVolume } from './growCutSuggestParams';
+import { resampleVolumeToAxisAlignedPad, isDirectionAxisAligned } from './volumeResample';
 
 import locale from '../locale.json';
 
@@ -378,15 +382,17 @@ export default class Serie
 
 			viewport_inputs.forEach(vi => this.renderingEngine.enableElement(vi));
 
-			const volume = await cornerstone.volumeLoader.createAndCacheVolume(volume_id, { imageIds });
-
-			this.volume = volume;
+			let volume = await cornerstone.volumeLoader.createAndCacheVolume(volume_id, { imageIds });
 
 			await new Promise(resolve => volume.load(resolve));
 
-			// data_range = volume.imageData.getPointData().getScalars().getRange();
-			data_range = volume.voxelManager.getRange();
+			// if (!isDirectionAxisAligned(volume.direction)) {
+			// 	volume = await resampleVolumeToAxisAlignedPad(volume.volumeId);
+			// }
 
+			this.volume = volume;
+
+			data_range = volume.voxelManager.getRange();
 			this.data_range = data_range;
 
 			volume.imageData
@@ -970,6 +976,8 @@ export default class Serie
 							cornerstoneTools.CircleScissorsTool.toolName,
 							cornerstoneTools.SphereScissorsTool.toolName,
 							cornerstoneTools.RegionSegmentTool.toolName,
+							RegionSegmentPlusRelaxedTool.toolName,
+							OneClickGrowCutObliqueTool.toolName,
 							cornerstoneTools.WholeBodySegmentTool.toolName,
 						];
 
@@ -984,6 +992,8 @@ export default class Serie
 							locale['Circle Scissors'][window.__LANG__],
 							locale['Sphere Scissors'][window.__LANG__],
 							locale['Region Segment'][window.__LANG__],
+							locale['Region Segment Plus'][window.__LANG__],
+							locale['One-Click GrowCut (Oblique)'][window.__LANG__],
 							locale['Whole Body Segment'][window.__LANG__],
 						];
 
@@ -1370,6 +1380,156 @@ export default class Serie
 							callback: evt => this.setRegionThresholdPositive(parseInt(evt.target.value)),
 						});
 
+						const regionSegmentPlusSettings = document.createElement('div');
+						{
+							// Create Region Segment Plus settings menu
+							regionSegmentPlusSettings.className = 'topbar-button-settings_menu';
+							regionSegmentPlusSettings.style.position = 'absolute';
+							regionSegmentPlusSettings.style.left = '100%';
+							regionSegmentPlusSettings.style.top = '0';
+							regionSegmentPlusSettings.style.marginLeft = '4px';
+							regionSegmentPlusSettings.style.backgroundColor = 'rgb(42, 42, 42)';
+
+							LOG(this.toolGroup._toolInstances[RegionSegmentPlusRelaxedTool.toolName].configuration)
+
+							createRange({
+								container: regionSegmentPlusSettings,
+								min: 0,
+								max: 2,
+								step: 0.01,
+								// value: getOneClickConfig().positiveSeedVariance ?? 0.4,
+								value: this.toolGroup._toolInstances[RegionSegmentPlusRelaxedTool.toolName].configuration.positiveSeedVariance,
+								name: locale['Positive seed variance'][window.__LANG__],
+								callback: evt => {
+									const v = parseFloat(evt.target.value);
+									window.__series.forEach(series => {
+										const inst = series.toolGroup._toolInstances[RegionSegmentPlusRelaxedTool.toolName];
+										if (inst?.configuration) inst.configuration.positiveSeedVariance = v;
+									});
+								},
+							});
+							createRange({
+								container: regionSegmentPlusSettings,
+								min: 0,
+								max: 2,
+								step: 0.01,
+								// value: getOneClickConfig().negativeSeedVariance ?? 0.9,
+								value: this.toolGroup._toolInstances[RegionSegmentPlusRelaxedTool.toolName].configuration.negativeSeedVariance,
+								name: locale['Negative seed variance'][window.__LANG__],
+								callback: evt => {
+									const v = parseFloat(evt.target.value);
+									window.__series.forEach(series => {
+										const inst = series.toolGroup._toolInstances[RegionSegmentPlusRelaxedTool.toolName];
+										if (inst?.configuration) inst.configuration.negativeSeedVariance = v;
+									});
+								},
+							});
+							createRange({
+								container: regionSegmentPlusSettings,
+								min: 200,
+								max: 1500,
+								step: 100,
+								value: this.toolGroup._toolInstances[RegionSegmentPlusRelaxedTool.toolName].configuration.mouseStabilityDelay,
+								name: locale['Stability delay (ms)'][window.__LANG__],
+								callback: evt => {
+									const v = parseInt(evt.target.value, 10);
+									window.__series.forEach(series => {
+										const inst = series.toolGroup._toolInstances[RegionSegmentPlusRelaxedTool.toolName];
+										if (inst?.configuration) inst.configuration.mouseStabilityDelay = v;
+									});
+								},
+							});
+							const suggestBtn = document.createElement('button');
+							suggestBtn.type = 'button';
+							suggestBtn.textContent = locale['Suggest for volume']?.[window.__LANG__] || 'Suggest for volume';
+							suggestBtn.style.marginTop = '6px';
+							suggestBtn.style.padding = '4px 8px';
+							suggestBtn.style.cursor = 'pointer';
+							suggestBtn.addEventListener('click', () => {
+								const volumeId = window.__series?.[0]?.volume?.volumeId;
+								if (!volumeId) {
+									console.warn('No volume loaded for suggestion.');
+									return;
+								}
+								const suggested = suggestGrowCutParamsForVolume(volumeId);
+								if (!suggested) {
+									console.warn('Could not suggest params for this volume.');
+									return;
+								}
+								window.__series.forEach(series => {
+									const inst = series.toolGroup._toolInstances[RegionSegmentPlusRelaxedTool.toolName];
+									if (inst?.configuration) {
+										inst.configuration.positiveSeedVariance = suggested.positiveSeedVariance;
+										inst.configuration.negativeSeedVariance = suggested.negativeSeedVariance;
+									}
+								});
+								const inputs = regionSegmentPlusSettings.querySelectorAll('input[type="range"]');
+								if (inputs[0]) { inputs[0].value = suggested.positiveSeedVariance; inputs[0].dispatchEvent(new Event('input', { bubbles: true })); }
+								if (inputs[1]) { inputs[1].value = suggested.negativeSeedVariance; inputs[1].dispatchEvent(new Event('input', { bubbles: true })); }
+								console.log('Suggested params:', suggested.positiveSeedVariance, suggested.negativeSeedVariance, suggested.hint);
+							});
+							regionSegmentPlusSettings.appendChild(suggestBtn);
+							LOG(suggestBtn)
+						}
+
+						// Create One-Click GrowCut (Oblique) settings menu
+						const oneClickGrowCutObliqueSettings = document.createElement('div');
+						oneClickGrowCutObliqueSettings.className = 'topbar-button-settings_menu';
+						oneClickGrowCutObliqueSettings.style.position = 'absolute';
+						oneClickGrowCutObliqueSettings.style.left = '100%';
+						oneClickGrowCutObliqueSettings.style.top = '0';
+						oneClickGrowCutObliqueSettings.style.marginLeft = '4px';
+						oneClickGrowCutObliqueSettings.style.backgroundColor = 'rgb(42, 42, 42)';
+
+						const getOneClickConfig = () => window.__series[0]?.toolGroup?._toolInstances?.[OneClickGrowCutObliqueTool.toolName]?.configuration ?? {};
+						createRange({
+							container: oneClickGrowCutObliqueSettings,
+							min: 0,
+							max: 2,
+							step: 0.01,
+							// value: getOneClickConfig().positiveSeedVariance ?? 0.4,
+							value: 0.02,
+							name: locale['Positive seed variance'][window.__LANG__],
+							callback: evt => {
+								const v = parseFloat(evt.target.value);
+								window.__series.forEach(series => {
+									const inst = series.toolGroup._toolInstances[OneClickGrowCutObliqueTool.toolName];
+									if (inst?.configuration) inst.configuration.positiveSeedVariance = v;
+								});
+							},
+						});
+						createRange({
+							container: oneClickGrowCutObliqueSettings,
+							min: 0,
+							max: 2,
+							step: 0.01,
+							// value: getOneClickConfig().negativeSeedVariance ?? 0.9,
+							value: 2,
+							name: locale['Negative seed variance'][window.__LANG__],
+							callback: evt => {
+								const v = parseFloat(evt.target.value);
+								window.__series.forEach(series => {
+									const inst = series.toolGroup._toolInstances[OneClickGrowCutObliqueTool.toolName];
+									if (inst?.configuration) inst.configuration.negativeSeedVariance = v;
+								});
+							},
+						});
+						createRange({
+							container: oneClickGrowCutObliqueSettings,
+							min: 200,
+							max: 1500,
+							step: 100,
+							value: getOneClickConfig().mouseStabilityDelay ?? 500,
+							name: locale['Stability delay (ms)'][window.__LANG__],
+							callback: evt => {
+								const v = parseInt(evt.target.value, 10);
+								window.__series.forEach(series => {
+									const inst = series.toolGroup._toolInstances[OneClickGrowCutObliqueTool.toolName];
+									if (inst?.configuration) inst.configuration.mouseStabilityDelay = v;
+								});
+							},
+						});
+
 						// Create dropdown menu items for segmentation tools
 						tool_names_segmentation.forEach
 						(
@@ -1468,6 +1628,49 @@ export default class Serie
 									);
 
 									menuItem.appendChild(regionSegmentSettings);
+								}
+
+								if (tool_name === RegionSegmentPlusRelaxedTool.toolName)
+								{
+									menuItem.innerHTML += `<div class="topbar-button-settings"></div>`;
+									menuItem.style.position = 'relative';
+
+
+									menuItem.querySelector('.topbar-button-settings').addEventListener
+									(
+										'click',
+										evt =>
+										{
+											evt.stopPropagation();
+											Array.from(document.getElementsByClassName('topbar-button-settings_menu'))
+												.filter(el => el !== regionSegmentPlusSettings)
+												.forEach(el => el.style.display = 'none');
+											regionSegmentPlusSettings.style.display = regionSegmentPlusSettings.style.display === 'block' ? 'none' : 'block';
+										},
+									);
+
+									menuItem.appendChild(regionSegmentPlusSettings);
+								}
+
+								if (tool_name === OneClickGrowCutObliqueTool.toolName)
+								{
+									menuItem.innerHTML += `<div class="topbar-button-settings"></div>`;
+									menuItem.style.position = 'relative';
+
+									menuItem.querySelector('.topbar-button-settings').addEventListener
+									(
+										'click',
+										evt =>
+										{
+											evt.stopPropagation();
+											Array.from(document.getElementsByClassName('topbar-button-settings_menu'))
+												.filter(el => el !== oneClickGrowCutObliqueSettings)
+												.forEach(el => el.style.display = 'none');
+											oneClickGrowCutObliqueSettings.style.display = oneClickGrowCutObliqueSettings.style.display === 'block' ? 'none' : 'block';
+										},
+									);
+
+									menuItem.appendChild(oneClickGrowCutObliqueSettings);
 								}
 
 								menuItem.addEventListener('mouseenter', () => {
@@ -1973,8 +2176,10 @@ export default class Serie
 		toolGroup.addTool(cornerstoneTools.PaintFillTool.toolName);
 		toolGroup.addTool(cornerstoneTools.CircleScissorsTool.toolName);
 		toolGroup.addTool(cornerstoneTools.SphereScissorsTool.toolName);
-		toolGroup.addTool(cornerstoneTools.RegionSegmentTool.toolName, { positiveSeedVariance: 0.1, negativeSeedVariance: 0.1 });
-		toolGroup.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName);
+						toolGroup.addTool(cornerstoneTools.RegionSegmentTool.toolName, { positiveSeedVariance: 0.1, negativeSeedVariance: 0.1 });
+						toolGroup.addTool(RegionSegmentPlusRelaxedTool.toolName);
+						toolGroup.addTool(OneClickGrowCutObliqueTool.toolName);
+						toolGroup.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName);
 		toolGroup.addToolInstance('Planar Freehand Contour Segmentation Interpolation', cornerstoneTools.PlanarFreehandContourSegmentationTool.toolName, { interpolation: { enabled: true, showInterpolationPolyline: true }, actions: { interpolate: true } } );
 		toolGroup.addTool(cornerstoneTools.LivewireContourSegmentationTool.toolName);
 		toolGroup.addToolInstance('Livewire Contour Segmentation Interpolation', cornerstoneTools.LivewireContourSegmentationTool.toolName, { interpolation: { enabled: true, showInterpolationPolyline: true } } );
@@ -2083,6 +2288,7 @@ export default class Serie
 			controlPoints,
 			startLinearIndex: worldPoints.startLinearIndex,
 			endLinearIndex: worldPoints.endLinearIndex,
+			selectedIndex: null,
 		};
 		addCenterlineToViewport3D(viewport, null, { controlPoints, showEndpoints: true });
 		this._attachCenterlineDragListeners(viewport);
@@ -2122,6 +2328,7 @@ export default class Serie
 		const onPointerDown = (evt) => {
 			const state = viewport.__centerlineState;
 			if (!state?.controlPoints?.length) return;
+			if (document.activeElement !== canvas) canvas.focus?.();
 			const canvasPos = getCanvasPos(evt);
 			const index = hitControlPoint(canvasPos, state);
 			if (index == null) return;
@@ -2139,6 +2346,69 @@ export default class Serie
 		};
 
 		const prefix = 'centerline-' + (viewport.id || '3d');
+
+		/** Update plane and plane–surface contour to the given centerline point index (no popup). */
+		const applyPlaneAndContourAtPoint = (index) => {
+			const state = viewport.__centerlineState;
+			const serie = viewport.__series;
+			if (!state?.controlPoints?.length || index < 0 || index >= state.controlPoints.length) return;
+			const pt = state.controlPoints[index];
+			const tangent = getTangentAtControlPoint(state.controlPoints, index);
+			const planeUid = prefix + '-plane';
+			const contourUid = prefix + '-plane-contour';
+			if (updateCenterlinePlane(viewport, planeUid, pt, tangent)) {
+				serie?.renderingEngine?.renderViewports([viewport.id]);
+			} else {
+				const planeEntry = createCenterlinePlaneActor(pt, tangent, { uid: planeUid });
+				viewport.addActor(planeEntry);
+				serie?.renderingEngine?.renderViewports([viewport.id]);
+			}
+			const surfaceActors = Array.from(viewport._actors.values()).filter(
+				a => a.representationUID?.includes(serie?.volume_segm?.volumeId + '-Surface')
+			);
+			const activeSegmentId = String(Number(cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(serie?.volume_segm?.volumeId)));
+			const activeSurfaceActor = surfaceActors.find(a => (a.representationUID?.split('-')[2]) === activeSegmentId);
+			if (activeSurfaceActor) {
+				const polyData = activeSurfaceActor.actor.getMapper().getInputData();
+				const vtkPoints = polyData.getPoints();
+				const numPoints = vtkPoints.getNumberOfPoints();
+				const meshPoints = [];
+				for (let i = 0; i < numPoints; i++) meshPoints.push(vtkPoints.getPoint(i));
+				const polysData = polyData.getPolys().getData();
+				const meshTriangles = [];
+				let offset = 0;
+				while (offset < polysData.length) {
+					const n = polysData[offset++];
+					if (n === 3) meshTriangles.push([polysData[offset++], polysData[offset++], polysData[offset++]]);
+					else offset += n;
+				}
+				const contours = intersectPlaneWithMesh(pt, tangent, meshPoints, meshTriangles);
+				if (contours.length > 0) {
+					const byArea = contours.map(c => {
+						const basis = getPlaneBasis(tangent);
+						const ox = pt[0], oy = pt[1], oz = pt[2];
+						let area = 0;
+						for (let i = 0; i < c.length; i++) {
+							const j = (i + 1) % c.length;
+							const ua = (c[i][0] - ox) * basis.u[0] + (c[i][1] - oy) * basis.u[1] + (c[i][2] - oz) * basis.u[2];
+							const va = (c[i][0] - ox) * basis.v[0] + (c[i][1] - oy) * basis.v[1] + (c[i][2] - oz) * basis.v[2];
+							const ub = (c[j][0] - ox) * basis.u[0] + (c[j][1] - oy) * basis.u[1] + (c[j][2] - oz) * basis.u[2];
+							const vb = (c[j][0] - ox) * basis.v[0] + (c[j][1] - oy) * basis.v[1] + (c[j][2] - oz) * basis.v[2];
+							area += ua * vb - ub * va;
+						}
+						return { c, area: Math.abs(area) * 0.5 };
+					});
+					byArea.sort((a, b) => b.area - a.area);
+					setCenterlinePlaneContour(viewport, contourUid, byArea[0].c);
+				} else {
+					setCenterlinePlaneContour(viewport, contourUid, null);
+				}
+			} else {
+				setCenterlinePlaneContour(viewport, contourUid, null);
+			}
+			state.selectedIndex = index;
+			serie?.renderingEngine?.renderViewports([viewport.id]);
+		};
 
 		const onPointerMove = (evt) => {
 			if (!dragging) return;
@@ -2246,14 +2516,44 @@ export default class Serie
 		const outputCrossSectionAtPoint = (index) => {
 			const state = viewport.__centerlineState;
 			const serie = viewport.__series;
-			if (!state?.controlPoints?.length || !serie?.volume_segm?.voxelManager || !serie?.volume?.imageData) return;
+			if (!state?.controlPoints?.length || !serie?.volume_segm || !serie?.volume?.imageData) return;
 			const pt = state.controlPoints[index];
 			const tangent = getTangentAtControlPoint(state.controlPoints, index);
-			const segScalarData = serie.volume_segm.voxelManager.getCompleteScalarDataArray();
-			const imageData = serie.volume.imageData;
-			const dimensions = imageData.getDimensions();
 			const segmentValue = Number(cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(serie.volume_segm.volumeId));
-			const result = crossSectionAtCenterlinePoint(pt, tangent, segScalarData, dimensions, segmentValue, imageData);
+			const activeSegmentId = String(segmentValue);
+			// Prefer 3D surface mesh slice (plane–mesh intersection) when surface is available
+			const surfaceActors = Array.from(viewport._actors.values()).filter(
+				a => a.representationUID?.includes(serie.volume_segm.volumeId + '-Surface')
+			);
+			const activeSurfaceActor = surfaceActors.find(
+				a => (a.representationUID?.split('-')[2]) === activeSegmentId
+			);
+			let result;
+			if (activeSurfaceActor) {
+				const polyData = activeSurfaceActor.actor.getMapper().getInputData();
+				const vtkPoints = polyData.getPoints();
+				const numPoints = vtkPoints.getNumberOfPoints();
+				const meshPoints = [];
+				for (let i = 0; i < numPoints; i++) meshPoints.push(vtkPoints.getPoint(i));
+				const polysData = polyData.getPolys().getData();
+				const meshTriangles = [];
+				let offset = 0;
+				while (offset < polysData.length) {
+					const n = polysData[offset++];
+					if (n === 3) {
+						meshTriangles.push([polysData[offset++], polysData[offset++], polysData[offset++]]);
+					} else {
+						offset += n;
+					}
+				}
+				result = crossSectionFromSurfaceMesh(pt, tangent, meshPoints, meshTriangles);
+			} else {
+				const segScalarData = serie.volume_segm.voxelManager?.getCompleteScalarDataArray();
+				const imageData = serie.volume.imageData;
+				const dimensions = imageData.getDimensions();
+				if (!segScalarData) return;
+				result = crossSectionAtCenterlinePoint(pt, tangent, segScalarData, dimensions, segmentValue, imageData);
+			}
 			console.log(`Point ${index + 1}/${state.controlPoints.length}`, result);
 			if (typeof window.__centerlineCrossSectionOutput === 'function') {
 				window.__centerlineCrossSectionOutput({ index, ...result });
@@ -2265,53 +2565,8 @@ export default class Serie
 		const onPointerUp = (evt) => {
 			if (!dragging) return;
 			evt.preventDefault();
-			const wasDragging = dragging;
-			const state = viewport.__centerlineState;
-			const serie = viewport.__series;
-			const canvasPos = getCanvasPos(evt);
-			const move = Math.hypot(canvasPos[0] - (wasDragging.downCanvasPos?.[0] ?? canvasPos[0]), canvasPos[1] - (wasDragging.downCanvasPos?.[1] ?? canvasPos[1]));
 			dragging = null;
 			canvas.releasePointerCapture?.(evt.pointerId);
-
-			const isStart = wasDragging.index === 0;
-			const isEnd = state?.controlPoints?.length && wasDragging.index === state.controlPoints.length - 1;
-			if ((isStart || isEnd) && serie?.volume_segm?.voxelManager && serie?.volume?.imageData) {
-				const world = state.controlPoints[wasDragging.index];
-				const segScalarData = serie.volume_segm.voxelManager.getCompleteScalarDataArray();
-				const imageData = serie.volume.imageData;
-				const dimensions = imageData.getDimensions();
-				const segmentValue = Number(cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(serie.volume_segm.volumeId));
-				const lin = worldToNearestSegmentVoxel(world, segScalarData, dimensions, segmentValue, imageData);
-				if (lin != null) {
-					const startLin = isStart ? lin : (state.startLinearIndex ?? null);
-					const endLin = isEnd ? lin : (state.endLinearIndex ?? null);
-					const worldPoints = computeCenterline(segScalarData, dimensions, segmentValue, imageData, startLin, endLin);
-					if (worldPoints.length >= 6) {
-						const n = (worldPoints.length / 3) | 0;
-						let length = 0;
-						for (let i = 0; i < n - 1; i++) {
-							const a = i * 3, b = (i + 1) * 3;
-							length += Math.hypot(worldPoints[b] - worldPoints[a], worldPoints[b + 1] - worldPoints[a + 1], worldPoints[b + 2] - worldPoints[a + 2]);
-						}
-						const spacing = Serie.CENTERLINE_CONTROL_POINT_SPACING;
-						const numControl = Math.max(Serie.CENTERLINE_NUM_CONTROL_MIN, Math.min(Serie.CENTERLINE_NUM_CONTROL_MAX, Math.round(2 + length / spacing)));
-						const numControlClamped = Math.min(numControl, Math.max(2, n));
-						const controlPoints = [];
-						for (let i = 0; i < numControlClamped; i++) {
-							const idx = i === numControlClamped - 1 ? n - 1 : Math.floor((i * (n - 1)) / (numControlClamped - 1));
-							controlPoints.push([worldPoints[idx * 3], worldPoints[idx * 3 + 1], worldPoints[idx * 3 + 2]]);
-						}
-						viewport.__centerlineState = {
-							controlPoints,
-							startLinearIndex: worldPoints.startLinearIndex,
-							endLinearIndex: worldPoints.endLinearIndex,
-						};
-						addCenterlineToViewport3D(viewport, null, { controlPoints, showEndpoints: true });
-						serie.renderingEngine.renderViewports([viewport.id]);
-						return;
-					}
-				}
-			}
 		};
 
 		const onDoubleClick = (evt) => {
@@ -2322,14 +2577,37 @@ export default class Serie
 			if (index != null) {
 				evt.preventDefault();
 				outputCrossSectionAtPoint(index);
+				applyPlaneAndContourAtPoint(index);
 			}
 		};
 
+		const onKeyDown = (evt) => {
+			if (evt.key !== 'ArrowUp' && evt.key !== 'ArrowDown') return;
+			const state = viewport.__centerlineState;
+			if (!state?.controlPoints?.length) return;
+			const n = state.controlPoints.length;
+			const current = state.selectedIndex;
+			let next;
+			if (evt.key === 'ArrowUp') {
+				next = current == null ? 0 : Math.max(current - 1, 0);
+			} else {
+				next = current == null ? n - 1 : Math.min(current + 1, n - 1);
+			}
+			if (next !== current) {
+				evt.preventDefault();
+				evt.stopPropagation();
+				applyPlaneAndContourAtPoint(next);
+				outputCrossSectionAtPoint(next);
+			}
+		};
+
+		canvas.setAttribute?.('tabIndex', 0);
 		canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
 		canvas.addEventListener('pointermove', onPointerMove, { passive: false });
 		canvas.addEventListener('pointerup', onPointerUp, { passive: false });
 		canvas.addEventListener('pointerleave', onPointerUp, { passive: false });
 		canvas.addEventListener('dblclick', onDoubleClick, { passive: false });
+		canvas.addEventListener('keydown', onKeyDown, { passive: false });
 		viewport.__centerlineDragListenersAttached = true;
 	}
 
@@ -2714,7 +2992,24 @@ export default class Serie
 
 	async createVolumeSegmentations (segm_labelmap_id)
 	{
-		const segm_labelmap = await cornerstone.volumeLoader.createAndCacheDerivedLabelmapVolume(this.volume.volumeId, { volumeId: segm_labelmap_id });
+		// When the reference is the axis-aligned padded volume, create the labelmap with createLocalVolume
+		// so dimensions match exactly. createAndCacheDerivedLabelmapVolume uses image metadata for slice
+		// size and can end up with wrong (smaller) derived images, causing getCompleteScalarDataArray to throw.
+		let segm_labelmap;
+		if (this.volume.volumeId.endsWith('_axis_aligned_pad')) {
+			const dims = this.volume.dimensions;
+			const n = dims[0] * dims[1] * dims[2];
+			segm_labelmap = cornerstone.volumeLoader.createLocalVolume(segm_labelmap_id, {
+				dimensions: dims.slice(),
+				spacing: this.volume.spacing.slice(),
+				origin: this.volume.origin.slice(),
+				direction: this.volume.direction.slice(),
+				scalarData: new Uint8Array(n),
+				metadata: this.volume.metadata ? structuredClone(this.volume.metadata) : {},
+			});
+		} else {
+			segm_labelmap = cornerstone.volumeLoader.createAndCacheDerivedLabelmapVolume(this.volume.volumeId, { volumeId: segm_labelmap_id });
+		}
 
 		segm_labelmap.imageData
 			.setDirection
@@ -2743,7 +3038,7 @@ export default class Serie
 					data:
 					{
 						volumeId: segm_labelmap.volumeId,
-						// referencedVolumeId: this.volume.volumeId,
+						referencedVolumeId: this.volume.volumeId,
 					},
 				},
 			},

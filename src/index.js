@@ -6,6 +6,8 @@ import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
 import initCornerstone from './js/cornerstonejs/utils/demo/helpers/initCornerstone';
+import OneClickGrowCutObliqueTool from './js/OneClickGrowCutObliqueTool';
+import RegionSegmentPlusRelaxedTool from './js/RegionSegmentPlusRelaxedTool';
 
 import color_LUT from './color-LUT';
 
@@ -131,6 +133,9 @@ window.addEventListener
 			cornerstoneTools.addTool(cornerstoneTools.CircleScissorsTool);
 			cornerstoneTools.addTool(cornerstoneTools.SphereScissorsTool);
 			cornerstoneTools.addTool(cornerstoneTools.RegionSegmentTool);
+			cornerstoneTools.addTool(cornerstoneTools.RegionSegmentPlusTool);
+			cornerstoneTools.addTool(RegionSegmentPlusRelaxedTool);
+			cornerstoneTools.addTool(OneClickGrowCutObliqueTool);
 			cornerstoneTools.addTool(cornerstoneTools.PlanarFreehandContourSegmentationTool);
 			cornerstoneTools.addTool(cornerstoneTools.LivewireContourSegmentationTool);
 			cornerstoneTools.addTool(cornerstoneTools.SplineContourSegmentationTool);

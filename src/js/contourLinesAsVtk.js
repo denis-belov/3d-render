@@ -29,11 +29,18 @@ import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkSphereSource from '@kitware/vtk.js/Filters/Sources/SphereSource';
+import vtkPlaneSource from '@kitware/vtk.js/Filters/Sources/PlaneSource';
 
-import { interpolateCatmullRomSpline } from './centerlineFromSegmentation';
+import { interpolateCatmullRomSpline, getPlaneBasis } from './centerlineFromSegmentation';
 
 /** WeakMap: actor -> vtkSphereSource, for updating sphere center without extending the actor. */
 const sphereSourceByActor = new WeakMap();
+
+/** WeakMap: actor -> vtkPlaneSource, for updating plane position/orientation. */
+const planeSourceByActor = new WeakMap();
+
+/** Half-extent of the centerline cross-section plane in world units (mm). */
+const CENTERLINE_PLANE_SIZE = 50;
 
 /**
  * Create a Cornerstone ActorEntry (uid + vtk actor) for rendering poly data as lines
@@ -186,6 +193,141 @@ export function updateSphereActorCenter (viewport, sphereUid, worldPoint) {
   const src = sphereSourceByActor.get(entry.actor);
   if (!src?.setCenter) return false;
   src.setCenter(worldPoint[0], worldPoint[1], worldPoint[2]);
+  return true;
+}
+
+/**
+ * Create a VTK plane actor for the centerline cross-section at a point (orthogonal to tangent).
+ * @param {[number,number,number]} center - World point on plane (centerline point)
+ * @param {[number,number,number]} normal - Unit normal (tangent to centerline; plane is perpendicular)
+ * @param {object} [options]
+ * @param {string} [options.uid] - Actor UID (default centerline-{viewportId}-plane)
+ * @param {[number,number,number]} [options.color=[0.2,0.6,0.9]] - RGB 0-1
+ * @param {number} [options.opacity=0.35]
+ * @param {number} [options.halfSize] - Half-extent in world units (default CENTERLINE_PLANE_SIZE)
+ * @returns {{ uid: string, actor: import('@kitware/vtk.js/Rendering/Core/Actor').default }}
+ */
+export function createCenterlinePlaneActor (center, normal, options = {}) {
+  const uid = options.uid ?? `centerline-plane-${Date.now()}`;
+  const color = options.color ?? [0.25, 0.55, 0.9];
+  const opacity = options.opacity ?? 0.5;
+  const size = options.halfSize ?? CENTERLINE_PLANE_SIZE;
+  const { u, v } = getPlaneBasis(normal);
+  const [cx, cy, cz] = center;
+  const origin = [
+    cx - size * u[0] - size * v[0],
+    cy - size * u[1] - size * v[1],
+    cz - size * u[2] - size * v[2],
+  ];
+  const point1 = [
+    cx + size * u[0] - size * v[0],
+    cy + size * u[1] - size * v[1],
+    cz + size * u[2] - size * v[2],
+  ];
+  const point2 = [
+    cx - size * u[0] + size * v[0],
+    cy - size * u[1] + size * v[1],
+    cz - size * u[2] + size * v[2],
+  ];
+  const planeSource = vtkPlaneSource.newInstance();
+  planeSource.setOrigin(origin[0], origin[1], origin[2]);
+  planeSource.setPoint1(point1[0], point1[1], point1[2]);
+  planeSource.setPoint2(point2[0], point2[1], point2[2]);
+  planeSource.setXResolution(8);
+  planeSource.setYResolution(8);
+  const mapper = vtkMapper.newInstance();
+  mapper.setInputConnection(planeSource.getOutputPort());
+  const actor = vtkActor.newInstance();
+  actor.setMapper(mapper);
+  actor.getProperty().setColor(...color);
+  actor.getProperty().setOpacity(opacity);
+  actor.getProperty().setBackfaceCulling(false);
+  actor.getProperty().setEdgeVisibility(true);
+  actor.getProperty().setEdgeColor(1, 1, 0.9);
+  actor.getProperty().setLineWidth(1.5);
+  actor.setForceTranslucent(true);
+  planeSourceByActor.set(actor, planeSource);
+  return { uid, actor };
+}
+
+/**
+ * Update the centerline plane actor position and orientation (e.g. when another point is selected).
+ * @param {import('@cornerstonejs/core').Types.IVolumeViewport} viewport
+ * @param {string} planeUid - Actor UID (e.g. centerline-{viewportId}-plane)
+ * @param {[number,number,number]} center - World point on plane
+ * @param {[number,number,number]} normal - Unit normal (tangent to centerline)
+ * @returns {boolean} true if the plane was updated
+ */
+export function updateCenterlinePlane (viewport, planeUid, center, normal) {
+  const entry = viewport.getActor?.(planeUid);
+  if (!entry?.actor) return false;
+  const planeSource = planeSourceByActor.get(entry.actor);
+  if (!planeSource) return false;
+  const size = CENTERLINE_PLANE_SIZE;
+  const { u, v } = getPlaneBasis(normal);
+  const [cx, cy, cz] = center;
+  const origin = [
+    cx - size * u[0] - size * v[0],
+    cy - size * u[1] - size * v[1],
+    cz - size * u[2] - size * v[2],
+  ];
+  const point1 = [
+    cx + size * u[0] - size * v[0],
+    cy + size * u[1] - size * v[1],
+    cz + size * u[2] - size * v[2],
+  ];
+  const point2 = [
+    cx - size * u[0] + size * v[0],
+    cy - size * u[1] + size * v[1],
+    cz - size * u[2] + size * v[2],
+  ];
+  planeSource.setOrigin(origin[0], origin[1], origin[2]);
+  planeSource.setPoint1(point1[0], point1[1], point1[2]);
+  planeSource.setPoint2(point2[0], point2[1], point2[2]);
+  return true;
+}
+
+/**
+ * Create or update the plane–surface intersection contour (closed line loop) for the centerline cross-section.
+ * Makes the intersection curve clearly visible on the 3D viewport.
+ * @param {import('@cornerstonejs/core').Types.IVolumeViewport} viewport
+ * @param {string} contourUid - Actor UID (e.g. centerline-{viewportId}-plane-contour)
+ * @param {[number,number,number][]} points3D - Closed contour points in world space (plane–mesh intersection)
+ * @param {object} [options] - color [0-1], lineWidth
+ * @returns {boolean} true if contour was added or updated
+ */
+export function setCenterlinePlaneContour (viewport, contourUid, points3D, options = {}) {
+  if (!points3D || points3D.length < 3) {
+    const existing = viewport.getActor?.(contourUid);
+    if (existing) viewport.removeActors([contourUid]);
+    return false;
+  }
+  const color = options.color ?? [1, 0.95, 0.2];
+  const lineWidth = options.lineWidth ?? 3;
+  const flat = [];
+  for (const p of points3D) flat.push(p[0], p[1], p[2]);
+  const n = points3D.length;
+  const lines = new Uint32Array(1 + n + 1);
+  lines[0] = n + 1;
+  for (let i = 0; i < n; i++) lines[1 + i] = i;
+  lines[1 + n] = 0;
+  const existing = viewport.getActor?.(contourUid);
+  if (existing?.actor?.getMapper) {
+    const polyData = vtkPolyData.newInstance();
+    polyData.getPoints().setData(new Float32Array(flat), 3);
+    const lineCells = vtkCellArray.newInstance();
+    lineCells.setData(lines);
+    polyData.setLines(lineCells);
+    existing.actor.getMapper().setInputData(polyData);
+    if (options.lineWidth != null) existing.actor.getProperty().setLineWidth(lineWidth);
+    return true;
+  }
+  const entry = createContourLineActor(flat, lines, {
+    uid: contourUid,
+    color,
+    lineWidth,
+  });
+  viewport.addActor(entry);
   return true;
 }
 

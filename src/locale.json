@@ -239,10 +239,40 @@
 		"en": "Region Segment",
 		"ru": "Региональная сегментация"
 	},
+	"Region Segment Plus":
+	{
+		"en": "Region Segment Plus",
+		"ru": "Региональная сегментация Plus"
+	},
 	"Whole Body Segment":
 	{
 		"en": "Whole Body Segment",
 		"ru": "Полная тело сегментация"
+	},
+	"One-Click GrowCut (Oblique)":
+	{
+		"en": "One-Click GrowCut (Oblique)",
+		"ru": "Однокликовая GrowCut (косой вид)"
+	},
+	"Positive seed variance":
+	{
+		"en": "Positive seed variance",
+		"ru": "Дисперсия позитивных семян"
+	},
+	"Negative seed variance":
+	{
+		"en": "Negative seed variance",
+		"ru": "Дисперсия негативных семян"
+	},
+	"Stability delay (ms)":
+	{
+		"en": "Stability delay (ms)",
+		"ru": "Задержка стабильности (мс)"
+	},
+	"Suggest for volume":
+	{
+		"en": "Suggest for volume",
+		"ru": "Подобрать для объёма"
 	},
 	"Planar Freehand Contour Segmentation":
 	{
