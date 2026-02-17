@@ -111,3 +111,21 @@ export const addMarkupAPI =
 			},
 		)
 			.then(resp => resp.json());
+
+const SEGMENTATION_BASE_URL = window.__API_SEGMENTATION__ || (config_api.SEGMENTATION && config_api.SEGMENTATION.URL) || 'http://localhost:5001';
+
+/** POST volume as JSON; server builds NIfTI and runs segmentation. Returns { dimensions: [d0,d1,d2], data: base64 } (mask uint8 0/1). */
+export const segmentVolumeAPI = (volumePayload) =>
+	fetch(`${ SEGMENTATION_BASE_URL }/segment`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(volumePayload),
+	}).then(async (resp) => {
+		if (!resp.ok) return resp.text().then(t => Promise.reject(new Error(t || resp.statusText)));
+		const ct = (resp.headers.get('Content-Type') || '').toLowerCase();
+		if (ct.includes('application/json')) {
+			return resp.json();
+		}
+		const buf = await resp.arrayBuffer();
+		return { dimensions: null, data: buf };
+	});

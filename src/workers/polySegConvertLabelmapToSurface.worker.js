@@ -71,6 +71,106 @@ async function initializePolySeg(progressCallback) {
   await polySegInitializingPromise;
 }
 
+/**
+ * Fill holes in a triangle mesh by finding boundary loops and capping them with a fan from the loop centroid.
+ * points: flat array [x,y,z, x,y,z, ...], polys: VTK cell array [3, i,j,k, 3, i,j,k, ...].
+ * Closes all boundary loops including large ones (e.g. volume-edge rims where segmentation touches the volume border).
+ */
+function fillHolesInMesh(points, polys) {
+  const pointsOut = Array.isArray(points) ? [...points] : Array.from(points);
+  const polysOut = Array.isArray(polys) ? [...polys] : Array.from(polys);
+
+  const getEdgeKey = (a, b) => (a < b ? `${a},${b}` : `${b},${a}`);
+
+  let offset = 0;
+  const edgeCount = new Map();
+  while (offset < polysOut.length) {
+    const n = polysOut[offset++];
+    if (n === 3) {
+      const i = polysOut[offset++];
+      const j = polysOut[offset++];
+      const k = polysOut[offset++];
+      for (const [a, b] of [[i, j], [j, k], [k, i]]) {
+        const key = getEdgeKey(a, b);
+        edgeCount.set(key, (edgeCount.get(key) || 0) + 1);
+      }
+    } else {
+      offset += n;
+    }
+  }
+
+  const boundaryEdges = new Set();
+  edgeCount.forEach((count, key) => {
+    if (count === 1) boundaryEdges.add(key);
+  });
+  if (boundaryEdges.size === 0) return { points: pointsOut, polys: polysOut };
+
+  const boundaryAdj = new Map();
+  boundaryEdges.forEach((key) => {
+    const [a, b] = key.split(',').map(Number);
+    if (!boundaryAdj.has(a)) boundaryAdj.set(a, []);
+    if (!boundaryAdj.has(b)) boundaryAdj.set(b, []);
+    boundaryAdj.get(a).push(b);
+    boundaryAdj.get(b).push(a);
+  });
+
+  const usedEdges = new Set();
+  const loops = [];
+
+  boundaryEdges.forEach((key) => {
+    if (usedEdges.has(key)) return;
+    const [start, next] = key.split(',').map(Number);
+    const loop = [start, next];
+    usedEdges.add(key);
+    usedEdges.add(getEdgeKey(next, start));
+
+    let current = next;
+    while (current !== start) {
+      const neighbors = boundaryAdj.get(current).filter((w) => {
+        const k = getEdgeKey(current, w);
+        return !usedEdges.has(k);
+      });
+      if (neighbors.length === 0) break;
+      const prev = current;
+      current = neighbors[0];
+      loop.push(current);
+      const k = getEdgeKey(prev, current);
+      usedEdges.add(k);
+      usedEdges.add(getEdgeKey(current, prev));
+    }
+
+    if (current === start && loop.length >= 3) {
+      loop.pop();
+      loops.push(loop);
+    }
+  });
+
+  for (const loop of loops) {
+    if (loop.length < 3) continue;
+
+    let cx = 0, cy = 0, cz = 0;
+    for (const idx of loop) {
+      cx += pointsOut[idx * 3];
+      cy += pointsOut[idx * 3 + 1];
+      cz += pointsOut[idx * 3 + 2];
+    }
+    cx /= loop.length;
+    cy /= loop.length;
+    cz /= loop.length;
+
+    const centroidIndex = pointsOut.length / 3;
+    pointsOut.push(cx, cy, cz);
+
+    for (let i = 0; i < loop.length; i++) {
+      const a = loop[i];
+      const b = loop[(i + 1) % loop.length];
+      polysOut.push(3, centroidIndex, a, b);
+    }
+  }
+
+  return { points: pointsOut, polys: polysOut };
+}
+
 async function convertLabelmapToSurface(args) {
   const { scalarData, dimensions, spacing, direction, origin, segmentIndex } = args;
 
@@ -84,6 +184,13 @@ async function convertLabelmapToSurface(args) {
     origin,
     [segmentIndex]
   );
+
+  // Hole-filling post-pass on the mesh
+  if (results.points && results.polys && results.points.length > 0 && results.polys.length > 0) {
+    const filled = fillHolesInMesh(results.points, results.polys);
+    results.points = filled.points;
+    results.polys = filled.polys;
+  }
 
   const rotationInfo = checkStandardBasis(direction);
   if (!rotationInfo.isStandard) {

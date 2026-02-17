@@ -1,0 +1,6 @@
+TotalSegmentator>=2.0
+pydicom>=2.0
+nibabel>=4.0
+SimpleITK>=2.0
+flask>=3.0
+flask-cors>=4.0

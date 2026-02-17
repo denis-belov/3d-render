@@ -712,26 +712,33 @@ function contourMetricsFromPoints (points3D, planeOrigin, basis) {
     area += contourPoints2D[i][0] * contourPoints2D[j][1] - contourPoints2D[j][0] * contourPoints2D[i][1];
   }
   area = 0.5 * Math.abs(area);
-  let maxDiameter = 0;
-  let maxA = 0, maxB = 1;
-  for (let a = 0; a < points3D.length; a++) {
-    for (let b = a + 1; b < points3D.length; b++) {
-      const d = Math.hypot(points3D[b][0] - points3D[a][0], points3D[b][1] - points3D[a][1], points3D[b][2] - points3D[a][2]);
-      if (d > maxDiameter) { maxDiameter = d; maxA = a; maxB = b; }
-    }
+  const centroidX = contourPoints2D.reduce((s, p) => s + p[0], 0) / n;
+  const centroidY = contourPoints2D.reduce((s, p) => s + p[1], 0) / n;
+  let maxRadiusSq = 0;
+  let farthestIdx = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = contourPoints2D[i][0] - centroidX;
+    const dy = contourPoints2D[i][1] - centroidY;
+    const rSq = dx * dx + dy * dy;
+    if (rSq > maxRadiusSq) { maxRadiusSq = rSq; farthestIdx = i; }
   }
-  const maxDiameterEndpoints2D = [contourPoints2D[maxA].slice(), contourPoints2D[maxB].slice()];
+  const maxRadius = Math.sqrt(maxRadiusSq);
+  const maxDiameter = 2 * maxRadius;
+  const fx = contourPoints2D[farthestIdx][0];
+  const fy = contourPoints2D[farthestIdx][1];
+  const oppositeX = 2 * centroidX - fx;
+  const oppositeY = 2 * centroidY - fy;
+  const maxDiameterEndpoints2D = [[fx, fy], [oppositeX, oppositeY]];
   const nAngle = 90;
   let minDiameter = maxDiameter;
   let minAngle = 0, minProjVal = 0, maxProjVal = 0;
   for (let ai = 0; ai < nAngle; ai++) {
     const angle = (Math.PI * ai) / nAngle;
-    const cx = Math.cos(angle) * u[0] + Math.sin(angle) * v[0];
-    const cy = Math.cos(angle) * u[1] + Math.sin(angle) * v[1];
-    const cz = Math.cos(angle) * u[2] + Math.sin(angle) * v[2];
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
     let minProj = Infinity, maxProj = -Infinity;
-    for (let p = 0; p < points3D.length; p++) {
-      const proj = (points3D[p][0] - ox) * cx + (points3D[p][1] - oy) * cy + (points3D[p][2] - oz) * cz;
+    for (let p = 0; p < n; p++) {
+      const proj = (contourPoints2D[p][0] - centroidX) * cosA + (contourPoints2D[p][1] - centroidY) * sinA;
       if (proj < minProj) minProj = proj;
       if (proj > maxProj) maxProj = proj;
     }
@@ -745,8 +752,8 @@ function contourMetricsFromPoints (points3D, planeOrigin, basis) {
   }
   const cosA = Math.cos(minAngle), sinA = Math.sin(minAngle);
   const minDiameterEndpoints2D = [
-    [minProjVal * cosA, minProjVal * sinA],
-    [maxProjVal * cosA, maxProjVal * sinA],
+    [centroidX + minProjVal * cosA, centroidY + minProjVal * sinA],
+    [centroidX + maxProjVal * cosA, centroidY + maxProjVal * sinA],
   ];
   return { area, maxDiameter, minDiameter, contourPoints2D, maxDiameterEndpoints2D, minDiameterEndpoints2D };
 }
@@ -826,30 +833,35 @@ export function crossSectionAtCenterlinePoint (planeOrigin, planeNormal, segScal
   if (points.length < 2) {
     return { area: 0, maxDiameter: 0, minDiameter: 0, contourPointsCount: points.length, contourPoints2D };
   }
-  let maxDiameter = 0;
-  let maxA = 0, maxB = 1;
-  for (let a = 0; a < points.length; a++) {
-    for (let b = a + 1; b < points.length; b++) {
-      const d = Math.hypot(points[b][0] - points[a][0], points[b][1] - points[a][1], points[b][2] - points[a][2]);
-      if (d > maxDiameter) {
-        maxDiameter = d;
-        maxA = a;
-        maxB = b;
-      }
-    }
+  const n = contourPoints2D.length;
+  const centroidX = contourPoints2D.reduce((s, p) => s + p[0], 0) / n;
+  const centroidY = contourPoints2D.reduce((s, p) => s + p[1], 0) / n;
+  let maxRadiusSq = 0;
+  let farthestIdx = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = contourPoints2D[i][0] - centroidX;
+    const dy = contourPoints2D[i][1] - centroidY;
+    const rSq = dx * dx + dy * dy;
+    if (rSq > maxRadiusSq) { maxRadiusSq = rSq; farthestIdx = i; }
   }
-  const maxDiameterEndpoints2D = [contourPoints2D[maxA].slice(), contourPoints2D[maxB].slice()];
+  const maxRadius = Math.sqrt(maxRadiusSq);
+  const maxDiameter = 2 * maxRadius;
+  const fx = contourPoints2D[farthestIdx][0];
+  const fy = contourPoints2D[farthestIdx][1];
+  const maxDiameterEndpoints2D = [
+    [fx, fy],
+    [2 * centroidX - fx, 2 * centroidY - fy]
+  ];
   const nAngle = 90;
   let minDiameter = maxDiameter;
   let minAngle = 0, minProjVal = 0, maxProjVal = 0;
   for (let ai = 0; ai < nAngle; ai++) {
     const angle = (Math.PI * ai) / nAngle;
-    const cx = Math.cos(angle) * u[0] + Math.sin(angle) * v[0];
-    const cy = Math.cos(angle) * u[1] + Math.sin(angle) * v[1];
-    const cz = Math.cos(angle) * u[2] + Math.sin(angle) * v[2];
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
     let minProj = Infinity, maxProj = -Infinity;
-    for (let p = 0; p < points.length; p++) {
-      const proj = (points[p][0] - planeOrigin[0]) * cx + (points[p][1] - planeOrigin[1]) * cy + (points[p][2] - planeOrigin[2]) * cz;
+    for (let p = 0; p < n; p++) {
+      const proj = (contourPoints2D[p][0] - centroidX) * cosA + (contourPoints2D[p][1] - centroidY) * sinA;
       if (proj < minProj) minProj = proj;
       if (proj > maxProj) maxProj = proj;
     }
@@ -863,8 +875,8 @@ export function crossSectionAtCenterlinePoint (planeOrigin, planeNormal, segScal
   }
   const cosA = Math.cos(minAngle), sinA = Math.sin(minAngle);
   const minDiameterEndpoints2D = [
-    [minProjVal * cosA, minProjVal * sinA],
-    [maxProjVal * cosA, maxProjVal * sinA]
+    [centroidX + minProjVal * cosA, centroidY + minProjVal * sinA],
+    [centroidX + maxProjVal * cosA, centroidY + maxProjVal * sinA]
   ];
   return {
     area, maxDiameter, minDiameter, contourPointsCount: points.length, contourPoints2D,

@@ -9,10 +9,18 @@ import { getWebWorkerManager, cache } from '@cornerstonejs/core';
 import JSZip from 'jszip';
 
 import locale from '../locale.json';
+import { segmentVolumeAPI } from './api';
 import { addContourLineActorsToViewport, removeContourLineActorsFromViewport } from './contourLinesAsVtk';
 
 /** viewportId -> Map(sliceIndex -> polyDataResults) for VTK contour lines per slice */
 const vtkContourLinesCache = new Map();
+
+/** viewportId -> saved contour line width (persists across re-renders) */
+const vtkContourLineWidthByViewportId = new Map();
+
+export function getContourLineWidth (viewportId) {
+  return vtkContourLineWidthByViewportId.get(viewportId) ?? 2;
+}
 
 
 
@@ -253,6 +261,11 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
     vtkLinesSection.style.left = '12px';
     vtkLinesSection.style.top = '4px';
     vtkLinesSection.style.zIndex = '10';
+    vtkLinesSection.style.display = 'flex';
+    vtkLinesSection.style.alignItems = 'center';
+    vtkLinesSection.style.gap = '8px';
+    vtkLinesSection.style.flexWrap = 'wrap';
+
     const vtkLinesBtn = document.createElement('button');
     vtkLinesBtn.type = 'button';
     vtkLinesBtn.className = 'input-element -button';
@@ -270,11 +283,43 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
     vtkLinesBtn.addEventListener('pointerdown', stopDrawing);
     vtkLinesBtn.addEventListener('pointerup', stopDrawing);
 
+    const lineWidthLabel = document.createElement('span');
+    lineWidthLabel.textContent = 'Line width:';
+    lineWidthLabel.style.fontSize = '11px';
+    lineWidthLabel.style.color = 'rgba(255,255,255,0.8)';
+    const lineWidthRange = document.createElement('input');
+    lineWidthRange.type = 'range';
+    lineWidthRange.min = '1';
+    lineWidthRange.max = '8';
+    lineWidthRange.step = '0.5';
+    lineWidthRange.value = String(getContourLineWidth(viewport_input.viewportId));
+    lineWidthRange.title = 'Contour line width';
+    lineWidthRange.style.width = '72px';
+    lineWidthRange.style.accentColor = '#4a90e2';
+    const lineWidthValue = document.createElement('span');
+    lineWidthValue.style.fontSize = '11px';
+    lineWidthValue.style.color = 'rgba(255,255,255,0.7)';
+    lineWidthValue.style.minWidth = '20px';
+    const updateLineWidthDisplay = () => { lineWidthValue.textContent = lineWidthRange.value; };
+    lineWidthRange.addEventListener('input', updateLineWidthDisplay);
+    updateLineWidthDisplay();
+
     const setVtkLinesButtonState = (on) => {
       viewport.__vtkContourLinesVisible = on;
       vtkLinesBtn.textContent = on ? 'VTK contour lines ✓' : 'VTK contour lines';
       vtkLinesBtn.classList.toggle('-active', on);
     };
+
+    lineWidthRange.addEventListener('input', () =>
+    {
+      const w = parseFloat(lineWidthRange.value) || 2;
+      vtkContourLineWidthByViewportId.set(viewport_input.viewportId, w);
+      const vp = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      if (vp) vp.__vtkContourLinesLineWidth = w;
+      if (vp?.__vtkContourLinesRefresh) vp.__vtkContourLinesRefresh();
+    });
+    lineWidthRange.addEventListener('mousedown', (evt) => evt.stopPropagation());
+    lineWidthRange.addEventListener('mouseup', (evt) => evt.stopPropagation());
 
     vtkLinesBtn.addEventListener('click', async evt =>
     {
@@ -289,6 +334,7 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
           viewport_input.element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, viewport.__vtkContourLinesOnSliceChange);
           viewport.__vtkContourLinesOnSliceChange = null;
         }
+        viewport.__vtkContourLinesRefresh = null;
         removeContourLineActorsFromViewport(viewport);
         setVtkLinesButtonState(false);
         _this.renderingEngine.renderViewports([viewportId]);
@@ -323,13 +369,16 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
         const c = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, _this.volume_segm.volumeId, segmentIndex);
         return c ? [c[0], c[1], c[2]] : [255, 255, 255];
       };
+      const getLineWidth = () => parseFloat(lineWidthRange.value) || 2;
+      vtkContourLineWidthByViewportId.set(viewport_input.viewportId, getLineWidth());
+      viewport.__vtkContourLinesLineWidth = getLineWidth();
       const contourLineOptions = _this.vertexColorsEnabled
-        ? { getPointColors: (points) => _this.getVertexColorsForWorldPoints(points) }
-        : { getSegmentColor };
+        ? { getPointColors: (points) => _this.getVertexColorsForWorldPoints(points), lineWidth: getLineWidth() }
+        : { getSegmentColor, lineWidth: getLineWidth() };
       const showLinesForSlice = (data) =>
       {
         if (!data?.size) return;
-        addContourLineActorsToViewport(viewport, data, contourLineOptions);
+        addContourLineActorsToViewport(viewport, data, { ...contourLineOptions, lineWidth: getLineWidth() });
       };
       await workerManager.executeTask('polySeg', 'cutSurfacesIntoPlanes', { surfacesInfo, planesInfo: sortedPlanes, surfacesAABB }, {
         callbacks: [
@@ -348,23 +397,40 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
       });
       viewport.__vtkContourLinesCache = sliceCache;
       let lastSliceIndex = currentSliceIndex;
+      const applyContourLinesForCurrentSlice = () =>
+      {
+        const current = viewport.getSliceIndex();
+        const opts = _this.vertexColorsEnabled
+          ? { getPointColors: (points) => _this.getVertexColorsForWorldPoints(points), lineWidth: getLineWidth() }
+          : { getSegmentColor, lineWidth: getLineWidth() };
+        const forSlice = sliceCache.get(current);
+        if (forSlice?.size) {
+          addContourLineActorsToViewport(viewport, forSlice, opts);
+        }
+      };
       const onSliceChange = () =>
       {
         const current = viewport.getSliceIndex();
         if (current === lastSliceIndex) return;
         lastSliceIndex = current;
-        const opts = _this.vertexColorsEnabled ? { getPointColors: (points) => _this.getVertexColorsForWorldPoints(points) } : { getSegmentColor };
-        const forSlice = sliceCache.get(current);
-        if (forSlice) {
-          addContourLineActorsToViewport(viewport, forSlice, opts);
-        }
+        applyContourLinesForCurrentSlice();
       };
       viewport.__vtkContourLinesOnSliceChange = onSliceChange;
+      viewport.__vtkContourLinesRefresh = () =>
+      {
+        if (!viewport.__vtkContourLinesVisible || !viewport.__vtkContourLinesCache) return;
+        removeContourLineActorsFromViewport(viewport);
+        applyContourLinesForCurrentSlice();
+        _this.renderingEngine.renderViewports([viewport_input.viewportId]);
+      };
       viewport_input.element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, onSliceChange);
       viewport_input.element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, onSliceChange);
       setVtkLinesButtonState(true);
     });
     vtkLinesSection.appendChild(vtkLinesBtn);
+    vtkLinesSection.appendChild(lineWidthLabel);
+    vtkLinesSection.appendChild(lineWidthRange);
+    vtkLinesSection.appendChild(lineWidthValue);
 
     const labelmapSection = document.createElement('div');
     labelmapSection.style.position = 'absolute';
@@ -436,6 +502,71 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
 
   if (viewport_input_index === 0)
   {
+    const segmentSection = document.createElement('div');
+    segmentSection.style.position = 'absolute';
+    segmentSection.style.left = '12px';
+    segmentSection.style.bottom = '28px';
+    segmentSection.style.zIndex = '10';
+    const segmentBtn = document.createElement('button');
+    segmentBtn.type = 'button';
+    segmentBtn.className = 'input-element -button';
+    segmentBtn.textContent = 'Segment';
+    segmentBtn.style.fontSize = '11px';
+    segmentBtn.style.padding = '2px 6px';
+    segmentBtn.title = 'Send volume to LGE segmentation server and show heart mask';
+    segmentBtn.addEventListener('mousedown', evt => evt.stopPropagation());
+    segmentBtn.addEventListener('mouseup', evt => evt.stopPropagation());
+    segmentBtn.addEventListener('click', async (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      if (!_this.volume) {
+        alert('No volume loaded');
+        return;
+      }
+      const prevText = segmentBtn.textContent;
+      segmentBtn.disabled = true;
+      segmentBtn.textContent = '…';
+      try {
+        const scalarData = _this.volume.voxelManager.getCompleteScalarDataArray();
+        const bytes = new Uint8Array(scalarData.buffer, scalarData.byteOffset, scalarData.byteLength);
+        let base64 = '';
+        const chunk = 8192;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          base64 += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+        }
+        base64 = btoa(base64);
+        // Use imageData so spacing/origin/dimensions match viewport (always in mm, same order as volume layout)
+        const imageData = _this.volume.imageData;
+        const dimensions = imageData.getDimensions?.() ?? _this.volume.dimensions;
+        const spacing = (imageData.getSpacing?.() ?? _this.volume.spacing).slice(0, 3);
+        const origin = (imageData.getOrigin?.() ?? _this.volume.origin).slice(0, 3);
+        // Match dtype to actual scalar array type (streaming loader uses Float32Array for 16-bit DICOM)
+        const dtype = scalarData instanceof Float32Array ? 'float32'
+          : scalarData instanceof Uint16Array ? 'uint16'
+          : scalarData instanceof Int16Array ? 'int16'
+          : scalarData instanceof Uint8Array ? 'uint8'
+          : 'float32';
+        const volumePayload = {
+          dimensions: Array.isArray(dimensions) ? dimensions.slice(0, 3) : [dimensions[0], dimensions[1], dimensions[2]],
+          spacing,
+          origin,
+          data: base64,
+          dtype,
+        };
+        const maskResponse = await segmentVolumeAPI(volumePayload);
+				LOG('maskResponse', maskResponse);
+        await _this.loadSegmentationFromMaskBytes(maskResponse);
+      } catch (err) {
+        console.error('Segmentation failed:', err);
+        alert('Segmentation failed: ' + (err.message || String(err)));
+      } finally {
+        segmentBtn.disabled = false;
+        segmentBtn.textContent = prevText;
+      }
+    });
+    segmentSection.appendChild(segmentBtn);
+    viewport_input.element.appendChild(segmentSection);
+
     const download_section = document.createElement('div');
     download_section.style.position = 'absolute';
     download_section.style.left = '1px';
@@ -638,7 +769,7 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
 			document.body.appendChild(container);
 		};
 
-		if (false)
+		// if (false)
 		{
 			const download_section2 = document.createElement('div');
 

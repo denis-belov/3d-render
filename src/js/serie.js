@@ -17,7 +17,7 @@ import MCWorker from '../workers/mc.worker';
 
 import { addMarkupAPI, getMarkupAPI } from './api';
 
-import { getViewportUIVolume, getViewportUIVolume3D } from './viewport-ui';
+import { getViewportUIVolume, getViewportUIVolume3D, getContourLineWidth } from './viewport-ui';
 import { addContourLineActorsToViewport, addCenterlineToViewport3D, updateSphereActorCenter, updateCenterlineLinePoints, createCenterlinePlaneActor, updateCenterlinePlane, setCenterlinePlaneContour } from './contourLinesAsVtk';
 import { computeCenterline, interpolateCatmullRomSpline, getTangentAtControlPoint, getPlaneBasis, crossSectionAtCenterlinePoint, crossSectionFromSurfaceMesh, intersectPlaneWithMesh, worldToNearestSegmentVoxel } from './centerlineFromSegmentation';
 
@@ -28,7 +28,6 @@ import { createSegmentationGUI, addSegmentationGUI, activateSegmentationGUI } fr
 import OneClickGrowCutObliqueTool from './OneClickGrowCutObliqueTool';
 import RegionSegmentPlusRelaxedTool from './RegionSegmentPlusRelaxedTool';
 import { suggestGrowCutParamsForVolume } from './growCutSuggestParams';
-import { resampleVolumeToAxisAlignedPad, isDirectionAxisAligned } from './volumeResample';
 
 import locale from '../locale.json';
 
@@ -385,10 +384,6 @@ export default class Serie
 			let volume = await cornerstone.volumeLoader.createAndCacheVolume(volume_id, { imageIds });
 
 			await new Promise(resolve => volume.load(resolve));
-
-			// if (!isDirectionAxisAligned(volume.direction)) {
-			// 	volume = await resampleVolumeToAxisAlignedPad(volume.volumeId);
-			// }
 
 			this.volume = volume;
 
@@ -2099,7 +2094,7 @@ export default class Serie
 			// TODO: call these functions when all webgl textures have benn created
 			// and remove try block from "activateSegmentation".
 			this.addSegmentation();
-			this.activateSegmentation(0);
+			// this.activateSegmentation(0);
 
 
 
@@ -2494,7 +2489,7 @@ export default class Serie
 			if (existing) existing.remove();
 			const popup = document.createElement('div');
 			popup.id = CENTERLINE_POPUP_ID;
-			popup.style.cssText = 'position:absolute;top:12px;left:12px;z-index:1000;background:#1c1c1e;color:#eee;padding:10px 12px;border-radius:6px;font:13px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);display:flex;align-items:flex-start;gap:10px;';
+			popup.style.cssText = 'position:fixed;top:12px;left:12px;z-index:10000;background:#1c1c1e;color:#eee;padding:10px 12px;border-radius:6px;font:13px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);display:flex;align-items:flex-start;gap:10px;';
 			const svgHtml = result.contourPoints2D?.length ? contourToSvgPath(result) : '';
 			popup.innerHTML = `
 				${svgHtml}
@@ -2504,13 +2499,7 @@ export default class Serie
 				</div>
 			`;
 			popup.querySelector('button').onclick = () => popup.remove();
-			const container = viewport.element;
-			if (container && container.style.position !== 'static') {
-				container.style.position = container.style.position || 'relative';
-				container.appendChild(popup);
-			} else {
-				document.body.appendChild(popup);
-			}
+			document.body.appendChild(popup);
 		};
 
 		const outputCrossSectionAtPoint = (index) => {
@@ -2662,10 +2651,10 @@ export default class Serie
 				}
 			}
 
-			// Create NIfTI header
+			// Create NIfTI header (pixelDims required: pixdim[0]=qfac, pixdim[1..3]=spacing for TotalSegmentator/nnUNet)
 			const niftiHeader = NIfTIWriter.createHeader({
 				dimensions: dimensions,
-				// pixelDims: spacing,
+				pixelDims: [1, spacing[0], spacing[1], spacing[2]],
 				origin: origin,
 				quatern_b: direction[0],
 				quatern_c: direction[1],
@@ -2898,6 +2887,83 @@ export default class Serie
 		});
 	}
 
+	/**
+	 * Load a segmentation mask from server response into the existing volume segmentation.
+	 * @param {{ dimensions: number[]|null, data: string|ArrayBuffer, multiLabel?: boolean, segmentLabels?: string[] }} response - From segment API. If multiLabel, data is 0..4 (0=bg, 1..4=chambers); segment indices 2..5 get distinct colors.
+	 */
+	async loadSegmentationFromMaskBytes(response) {
+		if (!this.volume_segm?.voxelManager) throw new Error('No existing volume segmentation to fill');
+		const voxelManager = this.volume_segm.voxelManager;
+		// Use dimensions from server response so format matches exactly; fallback to volume dimensions
+		const segDims = this.volume_segm.dimensions ?? this.volume_segm.imageData?.getDimensions?.() ?? voxelManager.dimensions;
+		const dims = (response && response.dimensions && response.dimensions.length >= 3) ? response.dimensions : segDims;
+		const d0 = dims[0];
+		const d1 = dims[1];
+		const d2 = dims[2];
+		const n = d0 * d1 * d2;
+		let mask;
+		if (typeof response.data === 'string') {
+			const binary = atob(response.data);
+			mask = new Uint8Array(binary.length);
+			for (let i = 0; i < binary.length; i++) mask[i] = binary.charCodeAt(i);
+		} else {
+			mask = new Uint8Array(response.data);
+		}
+		if (mask.length !== n) throw new Error(`Mask size ${mask.length} does not match dimensions ${d0}*${d1}*${d2}=${n}`);
+
+		const multiLabel = response.multiLabel === true;
+		const segmentLabels = Array.isArray(response.segmentLabels) ? response.segmentLabels : ['Left atrium', 'Left ventricle', 'Right atrium', 'Right ventricle'];
+
+		if (multiLabel) {
+			// Add 4 segments like "Add Segmentation" button: list entries + default colors from toolkit
+			while (this.segmentations.length < 4) {
+				const name = segmentLabels[this.segmentations.length] || `Chamber ${this.segmentations.length + 1}`;
+				this.addSegmentation(name);
+			}
+			// Rename all 4 to chamber names (first may have had an old name from a previous segmentation)
+			for (let i = 0; i < 4; i++) {
+				const label = segmentLabels[i] || `Chamber ${i + 1}`;
+				this.segmentations[i].name = label;
+				const item = this.segmentation_dropdown_menu?.querySelector(`.segmentation-item[data-segm-index="${i}"]`);
+				const nameInput = item?.querySelector('input[type="text"]');
+				if (nameInput) nameInput.value = label;
+			}
+			// Map server labels 1..4 to segment indices 2..5
+			const ScalarCtor = voxelManager._getConstructor?.() ?? Uint8Array;
+			const newScalarData = new ScalarCtor(n);
+			for (let k = 0; k < d2; k++) {
+				for (let j = 0; j < d1; j++) {
+					for (let i = 0; i < d0; i++) {
+						const idx = i + j * d0 + k * d0 * d1;
+						const v = mask[idx];
+						newScalarData[idx] = v === 0 ? 0 : v + 1;
+					}
+				}
+			}
+			voxelManager.setCompleteScalarDataArray(newScalarData);
+		} else {
+			const segmentIndex = Number(cornerstoneTools.segmentation.segmentIndex.getActiveSegmentIndex(this.volume_segm.volumeId)) || this.current_segm + 2;
+			const ScalarCtor = voxelManager._getConstructor?.() ?? Uint8Array;
+			const newScalarData = new ScalarCtor(n);
+			for (let k = 0; k < d2; k++) {
+				for (let j = 0; j < d1; j++) {
+					for (let i = 0; i < d0; i++) {
+						const idx = i + j * d0 + k * d0 * d1;
+						newScalarData[idx] = mask[idx] ? segmentIndex : 0;
+					}
+				}
+			}
+			voxelManager.setCompleteScalarDataArray(newScalarData);
+		}
+
+		if (typeof this.volume_segm.modified === 'function') this.volume_segm.modified();
+
+		try {
+			cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(this.volume_segm.volumeId);
+		} catch (_) {}
+		this.renderingEngine.renderViewports(this.viewport_inputs.map(({ viewportId }) => viewportId));
+	}
+
 	addSegmentation (name)
 	{
 		if (this.segmentations.length >= MAX_SEGMENTATION_COUNT)
@@ -2933,6 +2999,8 @@ export default class Serie
 		this.segmentations.push(segm);
 
 		addSegmentationGUI(this, segm, segm_index, segm_name);
+
+		this.activateSegmentation(segm_index);
 
 		return segm;
 	}
@@ -3247,7 +3315,7 @@ export default class Serie
 				const polyDataResults = cache.get(sliceIndex);
 				if (polyDataResults)
 				{
-					addContourLineActorsToViewport(vp, polyDataResults, { getPointColors });
+					addContourLineActorsToViewport(vp, polyDataResults, { getPointColors, lineWidth: getContourLineWidth(vp.id) });
 				}
 			}
 		}
@@ -3268,7 +3336,7 @@ export default class Serie
 				const polyDataResults = cache.get(sliceIndex);
 				if (polyDataResults)
 				{
-					addContourLineActorsToViewport(vp, polyDataResults, { getSegmentColor: (segmentIndex) => getSegmentColor(vp, segmentIndex) });
+					addContourLineActorsToViewport(vp, polyDataResults, { getSegmentColor: (segmentIndex) => getSegmentColor(vp, segmentIndex), lineWidth: getContourLineWidth(vp.id) });
 				}
 			}
 		}
@@ -3513,15 +3581,13 @@ export default class Serie
 	 */
 	showSegmentationStatsPopup ()
 	{
-		const viewport = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
-		const container = viewport?.element ?? document.body;
 		const popupId = 'segmentation-stats-popup';
 		const existing = document.getElementById(popupId);
 		if (existing) existing.remove();
 		const stats = this.getSegmentationStats();
 		const popup = document.createElement('div');
 		popup.id = popupId;
-		popup.style.cssText = 'position:absolute;top:50px;left:12px;z-index:1000;background:#1c1c1e;color:#eee;padding:12px 14px;border-radius:6px;font:13px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);min-width:200px;';
+		popup.style.cssText = 'position:fixed;top:12px;left:12px;z-index:10000;background:#1c1c1e;color:#eee;padding:12px 14px;border-radius:6px;font:13px system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);min-width:200px;';
 		popup.innerHTML = `
 			<div style="margin-bottom:8px;"><strong>Segmentation stats</strong></div>
 			<div>Red triangles area: <strong>${stats.redArea.toFixed(2)}</strong> mm²</div>
@@ -3530,8 +3596,7 @@ export default class Serie
 			<button type="button" style="margin-top:10px;background:#444;border:none;color:#ccc;cursor:pointer;padding:4px 10px;border-radius:4px;font-size:12px;">Close</button>
 		`;
 		popup.querySelector('button').onclick = () => popup.remove();
-		if (container.style.position === 'static' || !container.style.position) container.style.position = 'relative';
-		container.appendChild(popup);
+		document.body.appendChild(popup);
 	}
 
 	toggleVertexColors ()
