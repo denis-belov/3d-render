@@ -2,7 +2,54 @@ import * as cornerstoneTools from '@cornerstonejs/tools';
 
 import locale from '../locale.json';
 
+const Labelmap = cornerstoneTools.Enums.SegmentationRepresentations.Labelmap;
 
+/**
+ * Get segment color from the Labelmap representation so contours/points match the labelmap.
+ * Tries: (1) this viewport's Labelmap rep LUT, (2) any viewport's Labelmap rep LUT, (3) global LUT 0.
+ */
+export function getLabelmapSegmentColor (viewportId, segmentationId, segmentIndex)
+{
+	try {
+		let rep = cornerstoneTools.segmentation.state.getSegmentationRepresentation(viewportId, { segmentationId, type: Labelmap });
+		if (!rep) {
+			const viewportIds = cornerstoneTools.segmentation.state.getViewportIdsWithSegmentation(segmentationId);
+			for (const vpId of viewportIds || []) {
+				rep = cornerstoneTools.segmentation.state.getSegmentationRepresentation(vpId, { segmentationId, type: Labelmap });
+				if (rep) break;
+			}
+		}
+		const lutIndex = rep ? rep.colorLUTIndex : 0;
+		const colorLUT = cornerstoneTools.segmentation.state.getColorLUT(lutIndex);
+		if (!colorLUT) return null;
+		let c = colorLUT[segmentIndex];
+		if (!c) c = colorLUT[segmentIndex] = [ 0, 0, 0, 0 ];
+		return c;
+	} catch (_) {
+		return null;
+	}
+}
+
+/**
+ * Set segment color in every representation's LUT (Labelmap, Surface, Contour) for all viewports that have this segmentation.
+ */
+export function setSegmentIndexColorForAllRepresentations (viewportId, segmentationId, segmentIndex, color)
+{
+	const viewportIds = cornerstoneTools.segmentation.state.getViewportIdsWithSegmentation(segmentationId);
+	const ids = viewportIds?.length ? viewportIds : (viewportId ? [ viewportId ] : []);
+	for (const vpId of ids) {
+		const reps = cornerstoneTools.segmentation.state.getSegmentationRepresentations(vpId, { segmentationId });
+		if (!reps?.length) continue;
+		for (const rep of reps) {
+			const colorLUT = cornerstoneTools.segmentation.state.getColorLUT(rep.colorLUTIndex);
+			if (!colorLUT) continue;
+			let ref = colorLUT[segmentIndex];
+			if (!ref) ref = colorLUT[segmentIndex] = [ 0, 0, 0, 0 ];
+			for (let i = 0; i < color.length; i++) ref[i] = color[i];
+		}
+		cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationRepresentationModified(vpId, segmentationId);
+	}
+}
 
 export function createSegmentationGUI (_this)
 {
@@ -230,14 +277,21 @@ export function addSegmentationGUI (_this, segm, segm_index, segm_name)
 	{
 		evt.stopPropagation();
 		evt.stopImmediatePropagation();
-		cornerstoneTools.segmentation.config.color.setSegmentIndexColor(viewport.id, _this.volume_segm.volumeId, segm_index + 2, [ ...hexToRGB(evt.target.value), 50 ]);
+		const color = [ ...hexToRGB(evt.target.value), 50 ];
+		const viewportId = _this.viewport_inputs[0]?.viewportId;
+		setSegmentIndexColorForAllRepresentations(viewportId, _this.volume_segm.volumeId, segm_index + 2, color);
+		const viewportIds = _this.viewport_inputs.map(v => v.viewportId);
+		const allViewports = _this.renderingEngine?.getViewports?.() ?? [];
+		allViewports.forEach(vp => { if (vp?.id && !viewportIds.includes(vp.id)) viewportIds.push(vp.id); });
+		_this.applySegmentColors?.();
+		_this.renderingEngine.renderViewports(viewportIds);
 	};
 
 	color_input.addEventListener('input', updateColor);
 	color_input.addEventListener('change', updateColor);
 	color_input.addEventListener('click', evt => { evt.stopPropagation(); evt.stopImmediatePropagation(); });
 
-	const color = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, _this.volume_segm.volumeId, segm_index + 2);
+	const color = getLabelmapSegmentColor(viewport.id, _this.volume_segm.volumeId, segm_index + 2);
 
 	const componentToHex = comp =>
 	{
@@ -408,17 +462,25 @@ export function addSegmentationGUI (_this, segm, segm_index, segm_name)
 		const isVisible = masterToggleCheckbox.checked;
 		const segmentationId = _this.volume_segm.volumeId;
 
-		// Update all 2D viewports
+		// 1. Update segmentation_visibility and Cornerstone config for all 2D viewports
 		_this.viewport_inputs.forEach(viewport_input => {
 			_this.segmentation_visibility[segm_index][viewport_input.viewportId] = isVisible;
-
 			cornerstoneTools.segmentation.config.visibility.setSegmentIndexVisibility(
 				viewport_input.viewportId,
 				segmentationId,
 				segmentIndex,
 				isVisible
 			);
+		});
 
+		// 2. Apply to labelmap (per-segment visibility)
+		_this.reapplyLabelmapVisibility?.();
+
+		// 3. Apply to 3D surface
+		_this.applySurfaceVisibilityTo3DViewport?.();
+
+		// 4. Re-render all 2D viewports
+		_this.viewport_inputs.forEach((viewport_input) => {
 			_this.renderingEngine.renderViewport(viewport_input.viewportId);
 		});
 	});

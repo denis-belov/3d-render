@@ -4,25 +4,35 @@ import vtkColorMaps from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/C
 
 import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
-import { getWebWorkerManager, cache } from '@cornerstonejs/core';
+import { getWebWorkerManager, cache, utilities } from '@cornerstonejs/core';
 
 import JSZip from 'jszip';
 
 import locale from '../locale.json';
 import { segmentVolumeAPI } from './api';
-import { addContourLineActorsToViewport, removeContourLineActorsFromViewport } from './contourLinesAsVtk';
+import { getLabelmapSegmentColor } from './createSegmentationGUI';
+import { getOrCreateBlueRedVtkOverlay } from './blueRedVtkOverlay';
 
-/** viewportId -> Map(sliceIndex -> polyDataResults) for VTK contour lines per slice */
-const vtkContourLinesCache = new Map();
-
-/** viewportId -> saved contour line width (persists across re-renders) */
-const vtkContourLineWidthByViewportId = new Map();
-
-export function getContourLineWidth (viewportId) {
-  return vtkContourLineWidthByViewportId.get(viewportId) ?? 2;
+/** Set all segment colors in the labelmap LUT to alpha 255 so fillAlpha controls opacity (display uses (LUT[3]/255)*fillAlpha). */
+function setLabelmapLUTAlphaTo255 (viewportId, segmentationId) {
+  try {
+    const Labelmap = cornerstoneTools.Enums.SegmentationRepresentations.Labelmap;
+    const reps = cornerstoneTools.segmentation.state.getSegmentationRepresentations(viewportId, { segmentationId, type: Labelmap });
+    if (!reps?.length) return;
+    for (const rep of reps) {
+      const colorLUT = cornerstoneTools.segmentation.state.getColorLUT(rep.colorLUTIndex);
+      if (!colorLUT) continue;
+      for (let i = 0; i < colorLUT.length; i++) {
+        const c = colorLUT[i];
+        if (c && Array.isArray(c)) {
+          if (c.length < 4) c.push(255);
+          else c[3] = 255;
+        }
+      }
+    }
+    cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationRepresentationModified(viewportId, segmentationId);
+  } catch (_) {}
 }
-
-
 
 // container,
 // min = 0,
@@ -256,194 +266,33 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
 
   // if (_this.volume_segm)
   {
-    const vtkLinesSection = document.createElement('div');
-    vtkLinesSection.style.position = 'absolute';
-    vtkLinesSection.style.left = '12px';
-    vtkLinesSection.style.top = '4px';
-    vtkLinesSection.style.zIndex = '10';
-    vtkLinesSection.style.display = 'flex';
-    vtkLinesSection.style.alignItems = 'center';
-    vtkLinesSection.style.gap = '8px';
-    vtkLinesSection.style.flexWrap = 'wrap';
+    const viewportControlsWrapper = document.createElement('div');
+    viewportControlsWrapper.style.position = 'absolute';
+    viewportControlsWrapper.style.left = '12px';
+    viewportControlsWrapper.style.top = '4px';
+    viewportControlsWrapper.style.zIndex = '10';
+    viewportControlsWrapper.style.display = 'flex';
+    viewportControlsWrapper.style.flexDirection = 'column';
+    viewportControlsWrapper.style.gap = '6px';
+    viewportControlsWrapper.style.alignItems = 'flex-start';
 
-    const vtkLinesBtn = document.createElement('button');
-    vtkLinesBtn.type = 'button';
-    vtkLinesBtn.className = 'input-element -button';
-    vtkLinesBtn.textContent = 'VTK contour lines';
-    vtkLinesBtn.style.fontSize = '11px';
-    vtkLinesBtn.style.padding = '2px 6px';
-    vtkLinesBtn.title = 'Toggle VTK contour lines on this viewport';
     const stopDrawing = (evt) => {
       evt.stopPropagation();
       evt.stopImmediatePropagation();
       evt.preventDefault();
     };
-    vtkLinesBtn.addEventListener('mousedown', stopDrawing);
-    vtkLinesBtn.addEventListener('mouseup', stopDrawing);
-    vtkLinesBtn.addEventListener('pointerdown', stopDrawing);
-    vtkLinesBtn.addEventListener('pointerup', stopDrawing);
-
-    const lineWidthLabel = document.createElement('span');
-    lineWidthLabel.textContent = 'Line width:';
-    lineWidthLabel.style.fontSize = '11px';
-    lineWidthLabel.style.color = 'rgba(255,255,255,0.8)';
-    const lineWidthRange = document.createElement('input');
-    lineWidthRange.type = 'range';
-    lineWidthRange.min = '1';
-    lineWidthRange.max = '8';
-    lineWidthRange.step = '0.5';
-    lineWidthRange.value = String(getContourLineWidth(viewport_input.viewportId));
-    lineWidthRange.title = 'Contour line width';
-    lineWidthRange.style.width = '72px';
-    lineWidthRange.style.accentColor = '#4a90e2';
-    const lineWidthValue = document.createElement('span');
-    lineWidthValue.style.fontSize = '11px';
-    lineWidthValue.style.color = 'rgba(255,255,255,0.7)';
-    lineWidthValue.style.minWidth = '20px';
-    const updateLineWidthDisplay = () => { lineWidthValue.textContent = lineWidthRange.value; };
-    lineWidthRange.addEventListener('input', updateLineWidthDisplay);
-    updateLineWidthDisplay();
-
-    const setVtkLinesButtonState = (on) => {
-      viewport.__vtkContourLinesVisible = on;
-      vtkLinesBtn.textContent = on ? 'VTK contour lines ✓' : 'VTK contour lines';
-      vtkLinesBtn.classList.toggle('-active', on);
-    };
-
-    lineWidthRange.addEventListener('input', () =>
-    {
-      const w = parseFloat(lineWidthRange.value) || 2;
-      vtkContourLineWidthByViewportId.set(viewport_input.viewportId, w);
-      const vp = _this.renderingEngine.getViewport(viewport_input.viewportId);
-      if (vp) vp.__vtkContourLinesLineWidth = w;
-      if (vp?.__vtkContourLinesRefresh) vp.__vtkContourLinesRefresh();
-    });
-    lineWidthRange.addEventListener('mousedown', (evt) => evt.stopPropagation());
-    lineWidthRange.addEventListener('mouseup', (evt) => evt.stopPropagation());
-
-    vtkLinesBtn.addEventListener('click', async evt =>
-    {
-      evt.preventDefault();
-      evt.stopPropagation();
-      evt.stopImmediatePropagation();
-      const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
-      const viewportId = viewport_input.viewportId;
-
-      if (viewport.__vtkContourLinesVisible) {
-        if (viewport.__vtkContourLinesOnSliceChange) {
-          viewport_input.element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, viewport.__vtkContourLinesOnSliceChange);
-          viewport.__vtkContourLinesOnSliceChange = null;
-        }
-        viewport.__vtkContourLinesRefresh = null;
-        removeContourLineActorsFromViewport(viewport);
-        setVtkLinesButtonState(false);
-        _this.renderingEngine.renderViewports([viewportId]);
-        return;
-      }
-
-      const planesInfo = viewport.getSlicesClippingPlanes?.();
-      if (!planesInfo?.length) return;
-      const segmentation = cornerstoneTools.segmentation.state.getSegmentation(_this.volume_segm.volumeId);
-      if (!segmentation?.representationData?.Surface?.geometryIds) return;
-      const surfacesInfo = [];
-      segmentation.representationData.Surface.geometryIds.forEach((geometryId, segmentIndex) =>
-      {
-        const surface = cache.getGeometry(geometryId)?.data;
-        if (surface?.points?.length) surfacesInfo.push({ id: geometryId, points: surface.points, polys: surface.polys, segmentIndex });
-      });
-      if (!surfacesInfo.length) return;
-      const workerManager = getWebWorkerManager();
-      let surfacesAABB = new Map();
-      try
-      {
-        const aabbResult = await workerManager.executeTask('polySeg', 'getSurfacesAABBs', { surfacesInfo });
-        surfacesAABB = Array.isArray(aabbResult) ? new Map(aabbResult) : aabbResult;
-      }
-      catch (e) { console.warn('getSurfacesAABBs', e); }
-      const currentSliceIndex = viewport.getSliceIndex();
-      const sortedPlanes = [...planesInfo].sort((a, b) => Math.abs(a.sliceIndex - currentSliceIndex) - Math.abs(b.sliceIndex - currentSliceIndex));
-      if (!vtkContourLinesCache.has(viewport.id)) vtkContourLinesCache.set(viewport.id, new Map());
-      const sliceCache = vtkContourLinesCache.get(viewport.id);
-      const getSegmentColor = (segmentIndex) =>
-      {
-        const c = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, _this.volume_segm.volumeId, segmentIndex);
-        return c ? [c[0], c[1], c[2]] : [255, 255, 255];
-      };
-      const getLineWidth = () => parseFloat(lineWidthRange.value) || 2;
-      vtkContourLineWidthByViewportId.set(viewport_input.viewportId, getLineWidth());
-      viewport.__vtkContourLinesLineWidth = getLineWidth();
-      const contourLineOptions = _this.vertexColorsEnabled
-        ? { getPointColors: (points) => _this.getVertexColorsForWorldPoints(points), lineWidth: getLineWidth() }
-        : { getSegmentColor, lineWidth: getLineWidth() };
-      const showLinesForSlice = (data) =>
-      {
-        if (!data?.size) return;
-        addContourLineActorsToViewport(viewport, data, { ...contourLineOptions, lineWidth: getLineWidth() });
-      };
-      await workerManager.executeTask('polySeg', 'cutSurfacesIntoPlanes', { surfacesInfo, planesInfo: sortedPlanes, surfacesAABB }, {
-        callbacks: [
-          () => {},
-          (cacheData) =>
-          {
-            const sliceIndex = cacheData.sliceIndex;
-            const polyDataResults = cacheData.polyDataResults;
-            const map = Array.isArray(polyDataResults) ? new Map(polyDataResults) : (polyDataResults instanceof Map ? polyDataResults : new Map());
-            sliceCache.set(sliceIndex, map);
-            if (Number(sliceIndex) === Number(currentSliceIndex) && map.size) {
-              showLinesForSlice(map);
-            }
-          },
-        ],
-      });
-      viewport.__vtkContourLinesCache = sliceCache;
-      let lastSliceIndex = currentSliceIndex;
-      const applyContourLinesForCurrentSlice = () =>
-      {
-        const current = viewport.getSliceIndex();
-        const opts = _this.vertexColorsEnabled
-          ? { getPointColors: (points) => _this.getVertexColorsForWorldPoints(points), lineWidth: getLineWidth() }
-          : { getSegmentColor, lineWidth: getLineWidth() };
-        const forSlice = sliceCache.get(current);
-        if (forSlice?.size) {
-          addContourLineActorsToViewport(viewport, forSlice, opts);
-        }
-      };
-      const onSliceChange = () =>
-      {
-        const current = viewport.getSliceIndex();
-        if (current === lastSliceIndex) return;
-        lastSliceIndex = current;
-        applyContourLinesForCurrentSlice();
-      };
-      viewport.__vtkContourLinesOnSliceChange = onSliceChange;
-      viewport.__vtkContourLinesRefresh = () =>
-      {
-        if (!viewport.__vtkContourLinesVisible || !viewport.__vtkContourLinesCache) return;
-        removeContourLineActorsFromViewport(viewport);
-        applyContourLinesForCurrentSlice();
-        _this.renderingEngine.renderViewports([viewport_input.viewportId]);
-      };
-      viewport_input.element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, onSliceChange);
-      viewport_input.element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, onSliceChange);
-      setVtkLinesButtonState(true);
-    });
-    vtkLinesSection.appendChild(vtkLinesBtn);
-    vtkLinesSection.appendChild(lineWidthLabel);
-    vtkLinesSection.appendChild(lineWidthRange);
-    vtkLinesSection.appendChild(lineWidthValue);
 
     const labelmapSection = document.createElement('div');
-    labelmapSection.style.position = 'absolute';
-    labelmapSection.style.left = '12px';
-    labelmapSection.style.top = '28px';
-    labelmapSection.style.zIndex = '10';
+    labelmapSection.style.display = 'flex';
+    labelmapSection.style.alignItems = 'center';
+    labelmapSection.style.gap = '8px';
     const labelmapBtn = document.createElement('button');
     labelmapBtn.type = 'button';
     labelmapBtn.className = 'input-element -button';
     labelmapBtn.textContent = 'Labelmap';
     labelmapBtn.style.fontSize = '11px';
     labelmapBtn.style.padding = '2px 6px';
-    labelmapBtn.title = 'Show/hide labelmap segmentation (VTK lines unaffected)';
+    labelmapBtn.title = 'Show/hide labelmap segmentation';
     const setLabelmapButtonState = (visible) => {
       labelmapBtn.classList.toggle('-active', visible);
     };
@@ -451,21 +300,124 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
     labelmapBtn.addEventListener('mouseup', stopDrawing);
     labelmapBtn.addEventListener('pointerdown', stopDrawing);
     labelmapBtn.addEventListener('pointerup', stopDrawing);
-    setLabelmapButtonState(true);
+    const labelmapViewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+    const labelmapInitiallyHidden = labelmapViewport?.__labelmapHidden?.[_this.volume_segm?.volumeId] === true;
+    setLabelmapButtonState(!labelmapInitiallyHidden);
     const reapplyLabelmapVisibility = () =>
     {
       if (!_this.volume_segm) return;
       const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
-      if (!viewport?.getActors) return;
+      if (!viewport) return;
       const segmentationId = _this.volume_segm.volumeId;
-      const hidden = viewport.__labelmapHidden?.[segmentationId];
-      if (hidden === undefined) return;
-      const prefix = `${segmentationId}-Labelmap`;
-      const actors = viewport.getActors().filter(a => a.representationUID?.startsWith(prefix));
-      if (!actors.length) return;
-      actors.forEach(entry => entry.actor.setVisibility(!hidden));
+      const hidden = viewport.__labelmapHidden?.[segmentationId] === true || _this.vertexColorsEnabled === true;
+      const numSegments = _this.segmentations?.length ?? 0;
+
+      const labelmapRepresentationVisible = !hidden;
+      try {
+        cornerstoneTools.segmentation.config.visibility.setSegmentationRepresentationVisibility(
+          viewport_input.viewportId,
+          {
+            segmentationId,
+            type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+          },
+          labelmapRepresentationVisible
+        );
+      } catch (_) {}
+
+      const specifier = {
+          viewportId: viewport_input.viewportId,
+          segmentationId,
+          type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+        };
+      let opacity = null;
+      const sliderVal = viewport.__labelmapOpacityRange?.value;
+      if (sliderVal != null && sliderVal !== '') {
+        const parsed = parseFloat(sliderVal);
+        if (!Number.isNaN(parsed)) opacity = parsed;
+      }
+      if (opacity == null) opacity = viewport.__labelmapOpacity;
+      if (opacity == null) {
+        try {
+          const currentStyle = cornerstoneTools.segmentation.config.style.getStyle(specifier);
+          opacity = typeof currentStyle?.fillAlpha === 'number' ? currentStyle.fillAlpha : 0.5;
+        } catch (_) {
+          opacity = 0.5;
+        }
+      }
+      viewport.__labelmapOpacity = opacity;
+      if (viewport.__labelmapOpacityRange) {
+        viewport.__labelmapOpacityRange.value = String(opacity);
+        updateLabelmapOpacityDisplay();
+      }
+      try {
+        const currentStyle = cornerstoneTools.segmentation.config.style.getStyle(specifier);
+        cornerstoneTools.segmentation.config.style.setStyle(
+          specifier,
+          { ...currentStyle, fillAlpha: opacity, fillAlphaInactive: opacity },
+          false
+        );
+        setLabelmapLUTAlphaTo255(viewport_input.viewportId, segmentationId);
+        cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationRepresentationModified(viewport_input.viewportId, segmentationId);
+      } catch (_) {}
+
+      if (labelmapRepresentationVisible) {
+        for (let segm_index = 0; segm_index < numSegments; segm_index++) {
+          const segmentIndex = segm_index + 2;
+          const isVisible = _this.segmentation_visibility?.[segm_index]?.[viewport_input.viewportId] !== false;
+          try {
+            cornerstoneTools.segmentation.config.visibility.setSegmentIndexVisibility(viewport_input.viewportId, segmentationId, segmentIndex, isVisible);
+          } catch (_) {}
+        }
+      }
       _this.renderingEngine.renderViewports([viewport_input.viewportId]);
     };
+    const applyLabelmapOpacity = () => {
+      if (!_this.volume_segm) return;
+      const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      if (!viewport) return;
+      const segmentationId = _this.volume_segm.volumeId;
+      const specifier = {
+        viewportId: viewport_input.viewportId,
+        segmentationId,
+        type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+      };
+      let opacity = viewport.__labelmapOpacity;
+      if (opacity == null) {
+        try {
+          const currentStyle = cornerstoneTools.segmentation.config.style.getStyle(specifier);
+          opacity = typeof currentStyle?.fillAlpha === 'number' ? currentStyle.fillAlpha : 0.5;
+        } catch (_) {
+          opacity = 0.5;
+        }
+      }
+      try {
+        const currentStyle = cornerstoneTools.segmentation.config.style.getStyle(specifier);
+        cornerstoneTools.segmentation.config.style.setStyle(
+          specifier,
+          { ...currentStyle, fillAlpha: opacity, fillAlphaInactive: opacity },
+          false
+        );
+        setLabelmapLUTAlphaTo255(viewport_input.viewportId, segmentationId);
+      } catch (_) {}
+      _this.renderingEngine.renderViewports([viewport_input.viewportId]);
+    };
+    _this._labelmapReapplyFns = _this._labelmapReapplyFns || [];
+    if (_this._labelmapReapplyFns.length === 0) {
+      _this._labelmapReapplyFns.push(() => {
+        _this.viewport_inputs?.forEach(vp => {
+          const v = _this.renderingEngine.getViewport(vp.viewportId);
+          if (v?.__blueRedVtkOverlay?.invalidate) v.__blueRedVtkOverlay.invalidate();
+        });
+        _this.invalidateBlueRedVolumeCache?.();
+        if (_this._blueRedVolumeShown) {
+          _this.removeBlueRedVolumeFrom3DViewport();
+          _this.addBlueRedVolumeTo3DViewport();
+        }
+      });
+    }
+    _this._labelmapReapplyFns.push(reapplyLabelmapVisibility);
+    _this._labelmapReapplyFns.push(() => { _this._blueRedOverlayUpdateFns?.forEach(fn => fn()); });
+    _this.reapplyLabelmapVisibility = () => (_this._labelmapReapplyFns || []).forEach(fn => fn());
     labelmapBtn.addEventListener('click', evt =>
     {
       evt.preventDefault();
@@ -473,17 +425,14 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
       evt.stopImmediatePropagation();
       if (!_this.volume_segm) return;
       const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
-      if (!viewport?.getActors) return;
+      if (!viewport) return;
       const segmentationId = _this.volume_segm.volumeId;
-      const prefix = `${segmentationId}-Labelmap`;
-      const actors = viewport.getActors().filter(a => a.representationUID?.startsWith(prefix));
-      if (!actors.length) return;
-      const visible = !actors[0].actor.getVisibility();
       if (!viewport.__labelmapHidden) viewport.__labelmapHidden = {};
+      const currentlyHidden = viewport.__labelmapHidden[segmentationId] === true;
+      const visible = currentlyHidden;
       viewport.__labelmapHidden[segmentationId] = !visible;
-      actors.forEach(entry => entry.actor.setVisibility(visible));
       setLabelmapButtonState(visible);
-      _this.renderingEngine.renderViewports([viewport_input.viewportId]);
+      reapplyLabelmapVisibility();
     });
     const onLabelmapRerender = () =>
     {
@@ -496,8 +445,127 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
     viewport_input.element.addEventListener(cornerstone.Enums.Events.IMAGE_RENDERED, onLabelmapRerender);
     labelmapSection.appendChild(labelmapBtn);
 
-    viewport_input.element.appendChild(vtkLinesSection);
-    viewport_input.element.appendChild(labelmapSection);
+    const labelmapOpacityLabel = document.createElement('span');
+    labelmapOpacityLabel.textContent = (locale['Opacity'] && locale['Opacity'][window.__LANG__]) || 'Opacity';
+    labelmapOpacityLabel.style.fontSize = '11px';
+    labelmapOpacityLabel.style.color = 'rgba(255,255,255,0.8)';
+    const labelmapOpacityRange = document.createElement('input');
+    labelmapOpacityRange.type = 'range';
+    labelmapOpacityRange.min = '0';
+    labelmapOpacityRange.max = '1';
+    labelmapOpacityRange.step = '0.01';
+    const viewportForOpacity = _this.renderingEngine.getViewport(viewport_input.viewportId);
+    let initialOpacity = viewportForOpacity?.__labelmapOpacity;
+    if (initialOpacity == null) {
+      try {
+        if (_this.volume_segm?.volumeId) {
+          const style = cornerstoneTools.segmentation.config.style.getStyle({
+            viewportId: viewport_input.viewportId,
+            segmentationId: _this.volume_segm.volumeId,
+            type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+          });
+          initialOpacity = typeof style?.fillAlpha === 'number' ? style.fillAlpha : 0.5;
+        } else {
+          initialOpacity = 0.5;
+        }
+      } catch (_) {
+        initialOpacity = 0.5;
+      }
+      if (viewportForOpacity) viewportForOpacity.__labelmapOpacity = initialOpacity;
+    }
+    labelmapOpacityRange.value = String(initialOpacity);
+    labelmapOpacityRange.title = 'Labelmap transparency';
+    if (viewportForOpacity) viewportForOpacity.__labelmapOpacityRange = labelmapOpacityRange;
+    labelmapOpacityRange.style.width = '72px';
+    labelmapOpacityRange.style.accentColor = '#4a90e2';
+    const labelmapOpacityValue = document.createElement('span');
+    labelmapOpacityValue.style.fontSize = '11px';
+    labelmapOpacityValue.style.color = 'rgba(255,255,255,0.7)';
+    labelmapOpacityValue.style.minWidth = '28px';
+    const updateLabelmapOpacityDisplay = () => { labelmapOpacityValue.textContent = Math.round(parseFloat(labelmapOpacityRange.value) * 100) + '%'; };
+    labelmapOpacityRange.addEventListener('input', () => {
+      const vp = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      if (!vp) return;
+      const val = parseFloat(labelmapOpacityRange.value);
+      vp.__labelmapOpacity = val;
+      updateLabelmapOpacityDisplay();
+      applyLabelmapOpacity();
+      if (_this.vertexColorsEnabled) updateBlueRedSliceOverlay();
+    });
+    const stopPropagationOnly = (evt) => {
+      evt.stopPropagation();
+      evt.stopImmediatePropagation();
+    };
+    labelmapOpacityRange.addEventListener('mousedown', stopPropagationOnly);
+    labelmapOpacityRange.addEventListener('mouseup', stopPropagationOnly);
+    labelmapOpacityRange.addEventListener('pointerdown', stopPropagationOnly);
+    labelmapOpacityRange.addEventListener('pointerup', stopPropagationOnly);
+    updateLabelmapOpacityDisplay();
+    labelmapSection.appendChild(labelmapOpacityLabel);
+    labelmapSection.appendChild(labelmapOpacityRange);
+    labelmapSection.appendChild(labelmapOpacityValue);
+
+    const surfaceSliceLineWidthLabel = document.createElement('span');
+    surfaceSliceLineWidthLabel.textContent = (locale['Surface slice line width'] && locale['Surface slice line width'][window.__LANG__]) || 'Surface slice line';
+    surfaceSliceLineWidthLabel.style.fontSize = '11px';
+    surfaceSliceLineWidthLabel.style.color = 'rgba(255,255,255,0.8)';
+    const surfaceSliceLineWidthRange = document.createElement('input');
+    surfaceSliceLineWidthRange.type = 'range';
+    surfaceSliceLineWidthRange.min = '0.5';
+    surfaceSliceLineWidthRange.max = '20';
+    surfaceSliceLineWidthRange.step = '0.5';
+    let initialLineWidth = viewportForOpacity?.__surfaceSliceLineWidth;
+    if (initialLineWidth == null) initialLineWidth = 2;
+    if (viewportForOpacity) viewportForOpacity.__surfaceSliceLineWidth = initialLineWidth;
+    surfaceSliceLineWidthRange.value = String(initialLineWidth);
+    surfaceSliceLineWidthRange.title = 'Surface slice polyline width';
+    if (viewportForOpacity) viewportForOpacity.__surfaceSliceLineWidthRange = surfaceSliceLineWidthRange;
+    surfaceSliceLineWidthRange.style.width = '72px';
+    surfaceSliceLineWidthRange.style.accentColor = '#4a90e2';
+    const surfaceSliceLineWidthValue = document.createElement('span');
+    surfaceSliceLineWidthValue.style.fontSize = '11px';
+    surfaceSliceLineWidthValue.style.color = 'rgba(255,255,255,0.7)';
+    surfaceSliceLineWidthValue.style.minWidth = '28px';
+    const updateSurfaceSliceLineWidthDisplay = () => { surfaceSliceLineWidthValue.textContent = parseFloat(surfaceSliceLineWidthRange.value); };
+    surfaceSliceLineWidthRange.addEventListener('input', () => {
+      const vp = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      if (!vp) return;
+      const val = parseFloat(surfaceSliceLineWidthRange.value);
+      vp.__surfaceSliceLineWidth = val;
+      updateSurfaceSliceLineWidthDisplay();
+      if (_this.vertexColorsEnabled) updateBlueRedSliceOverlay();
+    });
+    surfaceSliceLineWidthRange.addEventListener('mousedown', stopPropagationOnly);
+    surfaceSliceLineWidthRange.addEventListener('mouseup', stopPropagationOnly);
+    surfaceSliceLineWidthRange.addEventListener('pointerdown', stopPropagationOnly);
+    surfaceSliceLineWidthRange.addEventListener('pointerup', stopPropagationOnly);
+    updateSurfaceSliceLineWidthDisplay();
+    labelmapSection.appendChild(surfaceSliceLineWidthLabel);
+    labelmapSection.appendChild(surfaceSliceLineWidthRange);
+    labelmapSection.appendChild(surfaceSliceLineWidthValue);
+
+    viewportControlsWrapper.appendChild(labelmapSection);
+
+    // Blue-red overlay: VTK render window with one volume (slice) actor; data created once when blue-red is enabled
+    function getOrCreateBlueRedSliceOverlay (viewport) {
+      if (viewport.__blueRedSliceOverlay) return viewport.__blueRedSliceOverlay;
+      const overlay = getOrCreateBlueRedVtkOverlay(viewport, _this);
+      if (overlay) viewport.__blueRedSliceOverlay = overlay;
+      return overlay;
+    }
+    const updateBlueRedSliceOverlay = () => {
+      const viewport = _this.renderingEngine.getViewport(viewport_input.viewportId);
+      if (!viewport || viewport instanceof cornerstone.VolumeViewport3D) return;
+      const overlay = getOrCreateBlueRedSliceOverlay(viewport);
+      if (overlay) overlay.update();
+    };
+    _this._blueRedOverlayUpdateFns = _this._blueRedOverlayUpdateFns || [];
+    _this._blueRedOverlayUpdateFns.push(updateBlueRedSliceOverlay);
+    viewport_input.element.addEventListener(cornerstone.Enums.Events.IMAGE_RENDERED, updateBlueRedSliceOverlay);
+    viewport_input.element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, updateBlueRedSliceOverlay);
+    if (_this.vertexColorsEnabled && _this.volume_segm) setTimeout(updateBlueRedSliceOverlay, 0);
+
+    viewport_input.element.appendChild(viewportControlsWrapper);
   }
 
   if (viewport_input_index === 0)
@@ -1363,31 +1431,38 @@ export const getViewportUIVolume3D = (_this, viewport_input) =>
 					setGradient();
 					setThumbPositions();
 					setLabels();
-					notify();
+					// Apply only on mouseup for performance (notify() recalculates vertex colors)
 				};
 				const onUp = () =>
 				{
 					active = null;
 					document.removeEventListener('mousemove', onMove);
 					document.removeEventListener('mouseup', onUp);
+					document.removeEventListener('pointermove', onMove);
+					document.removeEventListener('pointerup', onUp);
 					leftThumb.style.cursor = 'grab';
 					rightThumb.style.cursor = 'grab';
+					notify();
+				};
+				const addDragListeners = () => {
+					document.addEventListener('mousemove', onMove);
+					document.addEventListener('mouseup', onUp);
+					document.addEventListener('pointermove', onMove);
+					document.addEventListener('pointerup', onUp);
 				};
 				leftThumb.addEventListener('mousedown', (evt) => {
 					evt.preventDefault();
 					evt.stopPropagation();
 					active = leftThumb;
 					leftThumb.style.cursor = 'grabbing';
-					document.addEventListener('mousemove', onMove);
-					document.addEventListener('mouseup', onUp);
+					addDragListeners();
 				});
 				rightThumb.addEventListener('mousedown', (evt) => {
 					evt.preventDefault();
 					evt.stopPropagation();
 					active = rightThumb;
 					rightThumb.style.cursor = 'grabbing';
-					document.addEventListener('mousemove', onMove);
-					document.addEventListener('mouseup', onUp);
+					addDragListeners();
 				});
 				track.addEventListener('mousedown', (evt) => {
 					if (evt.target === track) {

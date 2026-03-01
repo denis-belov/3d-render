@@ -62,12 +62,13 @@ def _reorient_to_canonical(path_in: Path, path_out: Path) -> None:
     sitk.WriteImage(img_ras, str(path_out))
 
 
-# Order for four_chambers: 1=left atrium, 2=left ventricle, 3=right atrium, 4=right ventricle (match TotalSegmentator filenames).
+# Order for four_chambers: 1=left atrium, 2=left ventricle, 3=right atrium, 4=right ventricle, 5=myocardium (match TotalSegmentator filenames).
 HEART_CHAMBER_FILES = [
     ("heart_atrium_left.nii.gz", 1),
     ("heart_ventricle_left.nii.gz", 2),
     ("heart_atrium_right.nii.gz", 3),
     ("heart_ventricle_right.nii.gz", 4),
+    ("heart_myocardium.nii.gz", 5),
 ]
 
 
@@ -262,7 +263,7 @@ def segment():
         payload = {"dimensions": out_dims[:3], "data": base64.b64encode(mask_bytes).decode("ascii")}
         if HEART_MODE == "four_chambers":
             payload["multiLabel"] = True
-            payload["segmentLabels"] = ["Left atrium", "Left ventricle", "Right atrium", "Right ventricle"]
+            payload["segmentLabels"] = ["Left atrium", "Left ventricle", "Right atrium", "Right ventricle", "Myocardium"]
         return Response(json.dumps(payload), mimetype="application/json")
 
     except FileNotFoundError as e:

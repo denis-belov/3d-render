@@ -9,6 +9,7 @@ import * as niftiReader from 'nifti-reader-js';
 import '@kitware/vtk.js/Rendering/Profiles/Volume';
 
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 
 import * as cornerstone from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
@@ -17,14 +18,14 @@ import MCWorker from '../workers/mc.worker';
 
 import { addMarkupAPI, getMarkupAPI } from './api';
 
-import { getViewportUIVolume, getViewportUIVolume3D, getContourLineWidth } from './viewport-ui';
-import { addContourLineActorsToViewport, addCenterlineToViewport3D, updateSphereActorCenter, updateCenterlineLinePoints, createCenterlinePlaneActor, updateCenterlinePlane, setCenterlinePlaneContour } from './contourLinesAsVtk';
+import { getViewportUIVolume, getViewportUIVolume3D } from './viewport-ui';
+import { addCenterlineToViewport3D, updateSphereActorCenter, updateCenterlineLinePoints, createCenterlinePlaneActor, updateCenterlinePlane, setCenterlinePlaneContour } from './contourLinesAsVtk';
 import { computeCenterline, interpolateCatmullRomSpline, getTangentAtControlPoint, getPlaneBasis, crossSectionAtCenterlinePoint, crossSectionFromSurfaceMesh, intersectPlaneWithMesh, worldToNearestSegmentVoxel } from './centerlineFromSegmentation';
 
-import { cache, imageLoader, eventTarget } from '@cornerstonejs/core';
+import { cache, imageLoader, eventTarget, addVolumesToViewports } from '@cornerstonejs/core';
 import * as labelmapInterpolation from '@cornerstonejs/labelmap-interpolation';
 
-import { createSegmentationGUI, addSegmentationGUI, activateSegmentationGUI } from './createSegmentationGUI';
+import { createSegmentationGUI, addSegmentationGUI, activateSegmentationGUI, getLabelmapSegmentColor, setSegmentIndexColorForAllRepresentations } from './createSegmentationGUI';
 import OneClickGrowCutObliqueTool from './OneClickGrowCutObliqueTool';
 import RegionSegmentPlusRelaxedTool from './RegionSegmentPlusRelaxedTool';
 import { suggestGrowCutParamsForVolume } from './growCutSuggestParams';
@@ -2912,23 +2913,28 @@ export default class Serie
 		if (mask.length !== n) throw new Error(`Mask size ${mask.length} does not match dimensions ${d0}*${d1}*${d2}=${n}`);
 
 		const multiLabel = response.multiLabel === true;
-		const segmentLabels = Array.isArray(response.segmentLabels) ? response.segmentLabels : ['Left atrium', 'Left ventricle', 'Right atrium', 'Right ventricle'];
+		const segmentLabels = Array.isArray(response.segmentLabels) ? response.segmentLabels : ['Left atrium', 'Left ventricle', 'Right atrium', 'Right ventricle', 'Myocardium'];
+
+		// Store that segmentation was loaded from server (multiLabel); blue-red overlay will use inverted slice when sampling seg so overlay matches ref, while labelmap (same data) stays aligned with ref.
+		if (response.multiLabel === true && response.sliceOrder !== 'normal') this._segmentationSliceOrderReversed = true;
+		if (response.sliceOrder === 'normal') this._segmentationSliceOrderReversed = false;
 
 		if (multiLabel) {
-			// Add 4 segments like "Add Segmentation" button: list entries + default colors from toolkit
-			while (this.segmentations.length < 4) {
-				const name = segmentLabels[this.segmentations.length] || `Chamber ${this.segmentations.length + 1}`;
+			const numSegments = segmentLabels.length;
+			// Add segment slots like "Add Segmentation" button: list entries + default colors from toolkit
+			while (this.segmentations.length < numSegments) {
+				const name = segmentLabels[this.segmentations.length] || `Segment ${this.segmentations.length + 1}`;
 				this.addSegmentation(name);
 			}
-			// Rename all 4 to chamber names (first may have had an old name from a previous segmentation)
-			for (let i = 0; i < 4; i++) {
-				const label = segmentLabels[i] || `Chamber ${i + 1}`;
+			// Rename all to server labels (first may have had an old name from a previous segmentation)
+			for (let i = 0; i < numSegments; i++) {
+				const label = segmentLabels[i] || `Segment ${i + 1}`;
 				this.segmentations[i].name = label;
 				const item = this.segmentation_dropdown_menu?.querySelector(`.segmentation-item[data-segm-index="${i}"]`);
 				const nameInput = item?.querySelector('input[type="text"]');
 				if (nameInput) nameInput.value = label;
 			}
-			// Map server labels 1..4 to segment indices 2..5
+			// Map server labels 1..N to segment indices 2..(N+1); store mask as-is so labelmap matches ref
 			const ScalarCtor = voxelManager._getConstructor?.() ?? Uint8Array;
 			const newScalarData = new ScalarCtor(n);
 			for (let k = 0; k < d2; k++) {
@@ -3158,13 +3164,35 @@ export default class Serie
 		const surface_viewports = {};
 		const contour_viewports = {};
 
-		this.viewport_inputs.forEach(({ viewportId }) => labelmap_viewports[viewportId] = [ { segmentationId: segm_labelmap.volumeId } ]);
-		this.viewport_inputs.filter(({ type }) => type === 'volume3d').forEach(({ viewportId }) => surface_viewports[viewportId] = [ { segmentationId: segm_labelmap.volumeId } ]);
+		// Use app LUT index 0 so labelmap, contours and 3D surface share the same colors
+		this.viewport_inputs.forEach(({ viewportId }) => labelmap_viewports[viewportId] = [ { segmentationId: segm_labelmap.volumeId, config: { colorLUTOrIndex: 0 } } ]);
+		this.viewport_inputs.filter(({ type }) => type === 'volume3d').forEach(({ viewportId }) => surface_viewports[viewportId] = [ { segmentationId: segm_labelmap.volumeId, config: { colorLUTOrIndex: 0 } } ]);
 		// this.viewport_inputs.forEach(({ viewportId }) => contour_viewports[viewportId] = [ { segmentationId: segm_labelmap.volumeId } ]);
+
+		// Set labelmap fillAlpha from slider (or 0.5) before adding representation so first render uses correct opacity
+		this.viewport_inputs
+			.filter(vi => vi.type !== 'volume3d')
+			.forEach((viewport_input) => {
+				const viewport = this.renderingEngine.getViewport(viewport_input.viewportId);
+				const opacity = typeof viewport?.__labelmapOpacity === 'number' ? viewport.__labelmapOpacity : 0.5;
+				try {
+					cornerstoneTools.segmentation.config.style.setStyle(
+						{
+							viewportId: viewport_input.viewportId,
+							segmentationId: segm_labelmap.volumeId,
+							type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
+						},
+						{ fillAlpha: opacity, fillAlphaInactive: opacity },
+						false
+					);
+				} catch (_) {}
+			});
 
 		await cornerstoneTools.segmentation.addLabelmapRepresentationToViewportMap(labelmap_viewports);
 		await cornerstoneTools.segmentation.addSurfaceRepresentationToViewportMap(surface_viewports);
 		// await cornerstoneTools.segmentation.addContourRepresentationToViewportMap(contour_viewports);
+
+		setTimeout(() => this.reapplyLabelmapVisibility?.(), 0);
 
 		LOG(cornerstoneTools.segmentation)
 
@@ -3229,16 +3257,24 @@ export default class Serie
 			);
 	}
 
+	/** Max number of vertex-color cache entries (per blue_red thresholds + points hash). Cleared when thresholds change. */
+	static get VERTEX_COLORS_CACHE_MAX () { return 100; }
+
 	/**
 	 * Compute vertex colors (RGB Uint8Array) for world-space points using the same
 	 * logic as applyVertexColors: scalar value from volume at each point, then
 	 * blue / blue-orange gradient / red based on thresholds.
+	 * Result is cached per (blue_red1, blue_red2, points hash) so scrolling does not recalculate.
 	 * @param {Float32Array|number[]} worldPoints - Flat array x,y,z, x,y,z, ...
 	 * @returns {Uint8Array} RGB per point, length = worldPoints.length
 	 */
 	getVertexColorsForWorldPoints (worldPoints)
 	{
 		if (!worldPoints?.length) return new Uint8Array(0);
+		if (!this._vertexColorsCache) this._vertexColorsCache = new Map();
+		const key = `${this.blue_red1}_${this.blue_red2}_${this._vertexColorsPointsHash(worldPoints)}`;
+		const cached = this._vertexColorsCache.get(key);
+		if (cached) return cached;
 		function calculateMaskedStats (intensities, mask)
 		{
 			let sum = 0;
@@ -3256,6 +3292,7 @@ export default class Serie
 			return { mean, stdDev };
 		}
 		const stats = calculateMaskedStats(this.volume.voxelManager.getCompleteScalarDataArray(), this.volume_segm.voxelManager.getCompleteScalarDataArray());
+		const mean = (stats.mean > 0 && Number.isFinite(stats.mean)) ? stats.mean : 1;
 		const volumeScalarData = this.volume.voxelManager.getCompleteScalarDataArray();
 		const imageData = this.volume.imageData;
 		const dimensions = imageData.getDimensions();
@@ -3273,7 +3310,7 @@ export default class Serie
 			const j_idx = Math.max(0, Math.min(Math.floor(indexPoint[1]), height - 1));
 			const k_idx = Math.max(0, Math.min(Math.floor(indexPoint[2]), depth - 1));
 			const linearIndex = i_idx + j_idx * width + k_idx * width * height;
-			const scalarValue = volumeScalarData[linearIndex] / stats.mean;
+			const scalarValue = volumeScalarData[linearIndex] / mean;
 			if (scalarValue < thresholdValue1)
 			{
 				colors[i * 3] = 0; colors[i * 3 + 1] = 0; colors[i * 3 + 2] = 255;
@@ -3283,7 +3320,7 @@ export default class Serie
 				const range = thresholdValue2 - thresholdValue1;
 				const t = range > 0 ? (scalarValue - thresholdValue1) / range : 0;
 				colors[i * 3] = Math.round(135 + (255 - 135) * t);
-				colors[i * 3 + 1] = Math.round(206 + (165 - 206) * t);
+				colors[i * 3 + 1] = Math.round(206 + (0 - 206) * t);
 				colors[i * 3 + 2] = Math.round(250 + (0 - 250) * t);
 			}
 			else
@@ -3291,61 +3328,28 @@ export default class Serie
 				colors[i * 3] = 255; colors[i * 3 + 1] = 0; colors[i * 3 + 2] = 0;
 			}
 		}
+		if (this._vertexColorsCache.size >= Serie.VERTEX_COLORS_CACHE_MAX)
+		{
+			const firstKey = this._vertexColorsCache.keys().next().value;
+			if (firstKey != null) this._vertexColorsCache.delete(firstKey);
+		}
+		this._vertexColorsCache.set(key, colors);
 		return colors;
 	}
 
-	/**
-	 * Refresh VTK contour line actors on orthographic viewports where lines
-	 * mode is on (__vtkContourLinesVisible) and __vtkContourLinesCache exists.
-	 * Uses vertex colors when vertexColorsEnabled, else segment colors.
-	 */
-	refreshVTKContourLinesOnOrthoViewports (_viewports = null)
+	_vertexColorsPointsHash (worldPoints)
 	{
-		const viewports = _viewports || this.renderingEngine.getViewports();
-		if (this.vertexColorsEnabled)
-		{
-			const getPointColors = (points) => this.getVertexColorsForWorldPoints(points);
-			for (const vp of viewports)
-			{
-				const cache = vp.__vtkContourLinesCache;
-				if (!cache) continue;
-				if (!vp.__vtkContourLinesVisible) continue;
-				const sliceIndex = typeof vp.getSliceIndex === 'function' ? vp.getSliceIndex() : undefined;
-				if (sliceIndex === undefined) continue;
-				const polyDataResults = cache.get(sliceIndex);
-				if (polyDataResults)
-				{
-					addContourLineActorsToViewport(vp, polyDataResults, { getPointColors, lineWidth: getContourLineWidth(vp.id) });
-				}
-			}
-		}
-		else
-		{
-			const getSegmentColor = (vp, segmentIndex) =>
-			{
-				const c = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(vp.id, this.volume_segm.volumeId, segmentIndex);
-				return c ? [c[0], c[1], c[2]] : [255, 255, 255];
-			};
-			for (const vp of viewports)
-			{
-				const cache = vp.__vtkContourLinesCache;
-				if (!cache) continue;
-				if (!vp.__vtkContourLinesVisible) continue;
-				const sliceIndex = typeof vp.getSliceIndex === 'function' ? vp.getSliceIndex() : undefined;
-				if (sliceIndex === undefined) continue;
-				const polyDataResults = cache.get(sliceIndex);
-				if (polyDataResults)
-				{
-					addContourLineActorsToViewport(vp, polyDataResults, { getSegmentColor: (segmentIndex) => getSegmentColor(vp, segmentIndex), lineWidth: getContourLineWidth(vp.id) });
-				}
-			}
-		}
+		let h = worldPoints.length;
+		for (let i = 0; i < worldPoints.length && i < 300; i += 10)
+			h = ((h * 31) + worldPoints[i]) | 0;
+		return h;
 	}
 
-	applyVertexColors (threshold1, threshold2)
+	async applyVertexColors (threshold1, threshold2)
 	{
 		this.blue_red1 = threshold1;
 		this.blue_red2 = threshold2;
+		if (this._vertexColorsCache) this._vertexColorsCache.clear();
 		function calculateMaskedStats (intensities, mask)
 		{
 				let sum = 0;
@@ -3443,9 +3447,9 @@ export default class Serie
 						{
 							const range = thresholdValue2 - thresholdValue1;
 							const t = range > 0 ? (scalarValue - thresholdValue1) / range : 0;
-							// gradient: light blue (135,206,250) -> orange (255,165,0)
+							// gradient: light blue (135,206,250) -> red (255,0,0)
 							colors[i * 3]     = Math.round(135 + (255 - 135) * t);
-							colors[i * 3 + 1] = Math.round(206 + (165 - 206) * t);
+							colors[i * 3 + 1] = Math.round(206 + (0 - 206) * t);
 							colors[i * 3 + 2] = Math.round(250 + (0 - 250) * t);
 						}
 						else
@@ -3462,12 +3466,186 @@ export default class Serie
 
 		this.renderingEngine.renderViewports([ viewport.id ]);
 
-		// Refresh VTK contour lines on orthographic viewports (same as vtkLinesBtn color update)
-		this.refreshVTKContourLinesOnOrthoViewports();
+		this.applyLabelmapColorsFromBlueRed(threshold1, threshold2, stats);
+	}
+
+	/**
+	 * Map normalized scalar (value / stats.mean) to blue–gradient–red RGB using same logic as applyVertexColors.
+	 */
+	_scalarToBlueRedRGB (scalarValue, threshold1, threshold2)
+	{
+		if (scalarValue < threshold1) return [ 0, 0, 255 ];
+		if (scalarValue < threshold2)
+		{
+			const range = threshold2 - threshold1;
+			const t = range > 0 ? (scalarValue - threshold1) / range : 0;
+			return [
+				Math.round(135 + (255 - 135) * t),
+				Math.round(206 + (0 - 206) * t),
+				Math.round(250 + (0 - 250) * t),
+			];
+		}
+		return [ 255, 0, 0 ];
+	}
+
+	/**
+	 * Get per-voxel blue-red RGBA image for the viewport's current slice (for 2D overlay when vertexColorsEnabled).
+	 * @returns {{ width: number, height: number, data: Uint8ClampedArray, cornersInIndex: number[][] } | null}
+	 */
+	getBlueRedSliceImageData (viewport)
+	{
+		if (!this.volume?.imageData || !this.volume_segm?.volumeId) return null;
+		const volData = this.volume.voxelManager.getCompleteScalarDataArray();
+		const segData = this.volume_segm.voxelManager.getCompleteScalarDataArray();
+		const n = volData.length;
+		if (n !== segData.length) return null;
+		let sum = 0, count = 0;
+		for (let i = 0; i < n; i++) { if (segData[i] !== 0) { sum += volData[i]; count++; } }
+		const mean = count > 0 ? sum / count : 1;
+		const dims = this.volume.dimensions;
+		const [w, h, d] = dims;
+		const cam = viewport.getCamera?.();
+		if (!cam?.viewPlaneNormal) return null;
+		const normal = cam.viewPlaneNormal;
+		const sliceIndex = typeof viewport.getSliceIndex === 'function' ? viewport.getSliceIndex() : 0;
+		const t1 = typeof this.blue_red1 === 'number' ? this.blue_red1 : 1.2;
+		const t2 = typeof this.blue_red2 === 'number' ? this.blue_red2 : 1.32;
+		let sliceW, sliceH, getLinear;
+		const ax = Math.abs(normal[0]) > 0.5 ? 1 : 0;
+		const ay = Math.abs(normal[1]) > 0.5 ? 1 : 0;
+		const az = Math.abs(normal[2]) > 0.5 ? 1 : 0;
+		const sliceAxisSize = ax ? w : ay ? h : d;
+		const sliceIndexClamped = Math.max(0, Math.min(sliceIndex, sliceAxisSize - 1));
+		const sliceIndexSeg = this._segmentationSliceOrderReversed ? (sliceAxisSize - 1 - sliceIndexClamped) : sliceIndexClamped;
+		let getLinearSeg;
+		if (ax && !ay && !az) {
+			sliceW = h; sliceH = d;
+			getLinear = (a, b) => sliceIndexClamped + a * w + b * w * h;
+			getLinearSeg = (a, b) => sliceIndexSeg + a * w + b * w * h;
+		} else if (!ax && ay && !az) {
+			sliceW = w; sliceH = d;
+			getLinear = (a, b) => a + sliceIndexClamped * w + b * w * h;
+			getLinearSeg = (a, b) => a + sliceIndexSeg * w + b * w * h;
+		} else {
+			sliceW = w; sliceH = h;
+			getLinear = (a, b) => a + b * w + sliceIndexClamped * w * h;
+			getLinearSeg = (a, b) => a + b * w + sliceIndexSeg * w * h;
+		}
+		const viewportId = viewport.id;
+		const data = new Uint8ClampedArray(sliceW * sliceH * 4);
+		for (let b = 0; b < sliceH; b++) {
+			for (let a = 0; a < sliceW; a++) {
+				const lin = getLinear(a, b);
+				const linSeg = getLinearSeg(a, b);
+				const segVal = segData[linSeg];
+				if (segVal === 0) {
+					data[(b * sliceW + a) * 4 + 3] = 0;
+					continue;
+				}
+				const segm_index = segVal - 2;
+				if (segm_index >= 0 && this.segmentation_visibility?.[segm_index]?.[viewportId] === false) {
+					data[(b * sliceW + a) * 4 + 3] = 0;
+					continue;
+				}
+				const scalar = volData[lin] / mean;
+				const rgb = this._scalarToBlueRedRGB(scalar, t1, t2);
+				data[(b * sliceW + a) * 4] = rgb[0];
+				data[(b * sliceW + a) * 4 + 1] = rgb[1];
+				data[(b * sliceW + a) * 4 + 2] = rgb[2];
+				data[(b * sliceW + a) * 4 + 3] = 200;
+			}
+		}
+		let cornersInIndex;
+		if (ax && !ay && !az) {
+			cornersInIndex = [ [ sliceIndexClamped, 0, 0 ], [ sliceIndexClamped, h - 1, 0 ], [ sliceIndexClamped, 0, d - 1 ], [ sliceIndexClamped, h - 1, d - 1 ] ];
+		} else if (!ax && ay && !az) {
+			cornersInIndex = [ [ 0, sliceIndexClamped, 0 ], [ w - 1, sliceIndexClamped, 0 ], [ 0, sliceIndexClamped, d - 1 ], [ w - 1, sliceIndexClamped, d - 1 ] ];
+		} else {
+			cornersInIndex = [ [ 0, 0, sliceIndexClamped ], [ w - 1, 0, sliceIndexClamped ], [ 0, h - 1, sliceIndexClamped ], [ w - 1, h - 1, sliceIndexClamped ] ];
+		}
+		return { width: sliceW, height: sliceH, data, cornersInIndex };
+	}
+
+	/**
+	 * Update labelmap segment colors to blue/red scheme from volume intensity per segment (same as VTK contours).
+	 * Used only when per-voxel overlay is not available; otherwise _applyBlueRedOverlayToViewports is used.
+	 */
+	applyLabelmapColorsFromBlueRed (threshold1, threshold2, stats = null)
+	{
+		if (!this.volume_segm?.volumeId || !this.segmentations?.length) return;
+		const volumeScalarData = this.volume.voxelManager.getCompleteScalarDataArray();
+		const segScalarData = this.volume_segm.voxelManager.getCompleteScalarDataArray();
+		const n = volumeScalarData.length;
+		if (n !== segScalarData.length) return;
+		const meanAll = stats?.mean ?? (() => {
+			let sum = 0, count = 0;
+			for (let i = 0; i < n; i++) {
+				if (segScalarData[i] !== 0) { sum += volumeScalarData[i]; count++; }
+			}
+			return count > 0 ? sum / count : 1;
+		})();
+		const segmentationId = this.volume_segm.volumeId;
+		const viewportIds = this.viewport_inputs.map(v => v.viewportId);
+
+		if (!this._segmentColorsBeforeBlueRed) this._segmentColorsBeforeBlueRed = {};
+		viewportIds.forEach(viewportId => {
+			if (!this._segmentColorsBeforeBlueRed[viewportId]) this._segmentColorsBeforeBlueRed[viewportId] = {};
+			for (let segm_index = 0; segm_index < this.segmentations.length; segm_index++) {
+				const segmentIndex = segm_index + 2;
+				if (this._segmentColorsBeforeBlueRed[viewportId][segmentIndex] == null) {
+					try {
+						const c = getLabelmapSegmentColor(viewportId, segmentationId, segmentIndex);
+						this._segmentColorsBeforeBlueRed[viewportId][segmentIndex] = c ? [ ...c ] : [ 255, 255, 255, 50 ];
+					} catch (_) {
+						this._segmentColorsBeforeBlueRed[viewportId][segmentIndex] = [ 255, 255, 255, 50 ];
+					}
+				}
+			}
+		});
+
+		for (let segm_index = 0; segm_index < this.segmentations.length; segm_index++) {
+			const segmentIndex = segm_index + 2;
+			let sum = 0, count = 0;
+			for (let i = 0; i < n; i++) {
+				if (segScalarData[i] === segmentIndex) { sum += volumeScalarData[i]; count++; }
+			}
+			const meanSegment = count > 0 ? sum / count : 0;
+			const scalarValue = meanAll > 0 ? meanSegment / meanAll : 0;
+			const rgb = this._scalarToBlueRedRGB(scalarValue, threshold1, threshold2);
+			const color = [ rgb[0], rgb[1], rgb[2], 50 ];
+			viewportIds.forEach(viewportId => {
+				try {
+					setSegmentIndexColorForAllRepresentations(viewportId, segmentationId, segmentIndex, color);
+				} catch (_) {}
+			});
+		}
+		this.renderingEngine.renderViewports(viewportIds);
+	}
+
+	/**
+	 * Restore labelmap segment colors to state before blue/red was applied.
+	 */
+	restoreLabelmapSegmentColors ()
+	{
+		if (!this.volume_segm?.volumeId || !this._segmentColorsBeforeBlueRed) return;
+		const segmentationId = this.volume_segm.volumeId;
+		Object.keys(this._segmentColorsBeforeBlueRed).forEach(viewportId => {
+			Object.keys(this._segmentColorsBeforeBlueRed[viewportId]).forEach(segmentIndexStr => {
+				const segmentIndex = Number(segmentIndexStr);
+				const color = this._segmentColorsBeforeBlueRed[viewportId][segmentIndex];
+				if (color) {
+					try {
+						setSegmentIndexColorForAllRepresentations(viewportId, segmentationId, segmentIndex, color);
+					} catch (_) {}
+				}
+			});
+		});
+		this.renderingEngine.renderViewports(this.viewport_inputs.map(v => v.viewportId));
 	}
 
 	applySegmentColors ()
 	{
+		this.restoreLabelmapSegmentColors();
 		const viewport = this.renderingEngine.getViewports().find(viewport => viewport instanceof cornerstone.VolumeViewport3D);
 
 		Array.from(viewport._actors.values()).filter(actor => actor.representationUID?.includes(this.volume_segm.volumeId + '-Surface')).forEach
@@ -3483,7 +3661,7 @@ export default class Serie
 
 				for (let i = 0; i < numPoints; ++i)
 				{
-					const color = cornerstoneTools.segmentation.config.color.getSegmentIndexColor(viewport.id, this.volume_segm.volumeId, segment_index);
+					const color = getLabelmapSegmentColor(viewport.id, this.volume_segm.volumeId, segment_index);
 
 					colors[i * 3]     = color[0];
 					colors[i * 3 + 1] = color[1];
@@ -3495,9 +3673,6 @@ export default class Serie
 		);
 
 		this.renderingEngine.renderViewports([ viewport.id ]);
-
-		// Refresh VTK contour lines to use segment colors again (same as vtkLinesBtn color update)
-		this.refreshVTKContourLinesOnOrthoViewports();
 	}
 
 	/**
@@ -3599,18 +3774,303 @@ export default class Serie
 		document.body.appendChild(popup);
 	}
 
-	toggleVertexColors ()
+	async toggleVertexColors ()
 	{
 		this.vertexColorsEnabled = !this.vertexColorsEnabled;
 
 		if (this.vertexColorsEnabled)
 		{
-			this.applyVertexColors(this.blue_red1, this.blue_red2);
+			await this.applyVertexColors(this.blue_red1, this.blue_red2);
 		}
 		else
 		{
 			this.applySegmentColors();
 		}
+		this.applySurfaceVisibilityTo3DViewport();
+		this.reapplyLabelmapVisibility?.();
+	}
+
+	/**
+	 * Precompute scalar volume: same dimensions as reference; inside segment scalar = normalized intensity (value/stats.mean), outside = 0.
+	 * Creates and caches the volume; returns volumeId. Uses thresholds for invalidation (recreate when they change).
+	 */
+	getOrCreateBlueRedLabelmapVolume (threshold1, threshold2)
+	{
+		if (!this.volume?.volumeId || !this.volume_segm?.volumeId) return null;
+		const volumeId = `bluered:${this.volume_segm.volumeId}`;
+		const existing = cache.getVolume(volumeId);
+		if (existing && this._blueRedVolumeThresholds &&
+			this._blueRedVolumeThresholds[0] === threshold1 && this._blueRedVolumeThresholds[1] === threshold2) {
+			return volumeId;
+		}
+		if (existing) cache.removeVolumeLoadObject(volumeId);
+		const volScalar = this.volume.voxelManager.getCompleteScalarDataArray();
+		const segScalar = this.volume_segm.voxelManager.getCompleteScalarDataArray();
+		const n = volScalar.length;
+		if (n !== segScalar.length) return null;
+		const enabledSet = this.getEnabledSegmentIndices();
+		const isEnabled = (label) => enabledSet.size > 0 ? enabledSet.has(label) : label !== 0;
+		let sum = 0, count = 0;
+		for (let i = 0; i < n; i++) {
+			if (segScalar[i] !== 0) { sum += volScalar[i]; count++; }
+		}
+		const mean = count > 0 ? sum / count : 1;
+		const scalarData = new Float32Array(n);
+		for (let i = 0; i < n; i++) {
+			scalarData[i] = isEnabled(segScalar[i]) ? volScalar[i] / mean : 0;
+		}
+		const ref = this.volume;
+		const dimensions = ref.dimensions.slice();
+		const spacing = ref.spacing.slice();
+		const origin = ref.origin.slice();
+		const direction = ref.direction.slice();
+		const metadata = ref.metadata ? structuredClone(ref.metadata) : {};
+		cornerstone.volumeLoader.createLocalVolume(volumeId, {
+			metadata,
+			dimensions,
+			spacing,
+			origin,
+			direction,
+			scalarData,
+		});
+		this._blueRedVolumeThresholds = [ threshold1, threshold2 ];
+		return volumeId;
+	}
+
+	/**
+	 * Return Set of segment index values (2, 3, 4, ...) that are enabled for display.
+	 * @param {string} [viewportId] - If provided, segment is enabled when visible in this viewport; else when visible in any 2D viewport.
+	 */
+	getEnabledSegmentIndices (viewportId)
+	{
+		const enabled = new Set();
+		const vis = this.segmentation_visibility || {};
+		for (const segmIdx of Object.keys(vis).map(Number)) {
+			const segmentIndex = segmIdx + 2;
+			const perViewport = vis[segmIdx];
+			const visible = viewportId != null
+				? perViewport[viewportId] !== false
+				: !Object.values(perViewport).every(v => v === false);
+			if (visible) enabled.add(segmentIndex);
+		}
+		return enabled;
+	}
+
+	/**
+	 * Build vtkImageData for the blue-red scalar volume (same data as getOrCreateBlueRedLabelmapVolume).
+	 * Used by the VTK overlay; only enabled segment indices (per segmentation menu) are included.
+	 * @param {object} [viewport] - If provided, only segments visible in this viewport are included; else visible in any viewport.
+	 */
+	getBlueRedVolumeAsVtkImageData (viewport)
+	{
+		if (!this.volume?.volumeId || !this.volume_segm?.volumeId) return null;
+		const volScalar = this.volume.voxelManager.getCompleteScalarDataArray();
+		const segScalar = this.volume_segm.voxelManager.getCompleteScalarDataArray();
+		const n = volScalar.length;
+		if (n !== segScalar.length) return null;
+		const viewportId = viewport && viewport.id;
+		const enabledSet = this.getEnabledSegmentIndices(viewportId);
+		const isEnabled = (label) => enabledSet.size > 0 ? enabledSet.has(label) : label !== 0;
+		let sum = 0, count = 0;
+		for (let i = 0; i < n; i++) {
+			if (segScalar[i] !== 0) { sum += volScalar[i]; count++; }
+		}
+		const mean = count > 0 ? sum / count : 1;
+		const scalarData = new Float32Array(n);
+		for (let i = 0; i < n; i++) {
+			scalarData[i] = isEnabled(segScalar[i]) ? volScalar[i] / mean : -1;
+		}
+		const ref = this.volume;
+		const dimensions = ref.dimensions.slice();
+		const spacing = ref.spacing.slice();
+		const origin = ref.origin.slice();
+		let direction = ref.direction;
+		if (direction && direction.length >= 9) {
+			direction = direction.slice(0, 9);
+		} else {
+			direction = [ 1, 0, 0, 0, 1, 0, 0, 0, 1 ];
+		}
+		const imageData = vtkImageData.newInstance();
+		imageData.setDimensions(dimensions[0], dimensions[1], dimensions[2]);
+		imageData.setSpacing(spacing[0], spacing[1], spacing[2]);
+		imageData.setOrigin(origin[0], origin[1], origin[2]);
+		imageData.setDirection(direction);
+		imageData.getPointData().setScalars(vtkDataArray.newInstance({ name: 'Scalars', values: scalarData, numberOfComponents: 1 }));
+		return imageData;
+	}
+
+	/**
+	 * Surface slice: slice 3D surface meshes with the 2D viewport's plane using the polySeg worker (cutSurfacesIntoPlanes).
+	 * Returns contour polylines and point colors matching 3D surface vertex colors. Supports parallelization for many slices.
+	 * @param {object} viewport - 2D viewport (for camera plane)
+	 * @returns {Promise<{ points: Float32Array, lines: Uint32Array, pointColors: Uint8Array } | null>}
+	 */
+	getSurfaceContoursForSliceAsync (viewport)
+	{
+		if (!this.volume_segm?.volumeId || !viewport?.getCamera) return Promise.resolve(null);
+		const cam = viewport.getCamera();
+		if (!cam?.focalPoint?.length || !cam?.viewPlaneNormal?.length) return Promise.resolve(null);
+		const viewport3D = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
+		if (!viewport3D?._actors) return Promise.resolve(null);
+		const enabledSet = this.getEnabledSegmentIndices(viewport.id);
+		const prefix = this.volume_segm.volumeId + '-Surface';
+		const surfacesInfo = [];
+		for (const entry of viewport3D._actors.values()) {
+			const repUID = entry.representationUID;
+			if (!repUID?.includes(prefix)) continue;
+			const parts = repUID.split('-');
+			const segmentIndex = parts.length >= 3 ? parseInt(parts[2], 10) : NaN;
+			if (Number.isNaN(segmentIndex) || (enabledSet.size > 0 && !enabledSet.has(segmentIndex))) continue;
+			const polyData = entry.actor?.getMapper?.()?.getInputData?.();
+			if (!polyData?.getPoints?.()?.getData || !polyData?.getPolys?.()?.getData) continue;
+			const points = polyData.getPoints().getData();
+			const polys = polyData.getPolys().getData();
+			surfacesInfo.push({
+				points: Array.from(points),
+				polys: Array.from(polys),
+				id: segmentIndex,
+				segmentIndex
+			});
+		}
+		if (surfacesInfo.length === 0) return Promise.resolve(null);
+		const planeOrigin = [ cam.focalPoint[0], cam.focalPoint[1], cam.focalPoint[2] ];
+		const planeNormal = [ cam.viewPlaneNormal[0], cam.viewPlaneNormal[1], cam.viewPlaneNormal[2] ];
+		const planesInfo = [ { sliceIndex: 0, planes: [ { origin: planeOrigin, normal: planeNormal } ] } ];
+		const workerManager = cornerstone.getWebWorkerManager();
+		return new Promise((resolve, reject) => {
+			let sliceResult = null;
+			const updateCacheCallback = (cacheData) => {
+				if (cacheData.sliceIndex === 0 && cacheData.polyDataResults) sliceResult = cacheData.polyDataResults;
+			};
+			workerManager.executeTask('polySeg', 'cutSurfacesIntoPlanes', { planesInfo, surfacesInfo }, { callbacks: [ null, updateCacheCallback ] })
+				.then(() => {
+					if (!sliceResult || !(sliceResult instanceof Map)) { resolve(null); return; }
+					const flatPoints = [];
+					const linesList = [];
+					for (const [ segIdx, data ] of sliceResult) {
+						const pts = data.points;
+						const lns = data.lines;
+						if (!pts?.length || !lns?.length) continue;
+						const pointOffset = flatPoints.length / 3;
+						for (let i = 0; i < pts.length; i++) flatPoints.push(pts[i]);
+						let i = 0;
+						while (i < lns.length) {
+							const n = lns[i++];
+							linesList.push(n);
+							for (let k = 0; k < n; k++) linesList.push(lns[i + k] + pointOffset);
+							i += n;
+						}
+					}
+					if (flatPoints.length === 0) { resolve(null); return; }
+					const points = new Float32Array(flatPoints);
+					const pointColors = this.getVertexColorsForWorldPoints(points);
+					const lines = new Uint32Array(linesList);
+					resolve({ points, lines, pointColors });
+				})
+				.catch(reject);
+		});
+	}
+
+	/**
+	 * Add blue-red labelmap volume to 3D viewport and set transfer functions (0 = transparent, blue at threshold1, red at threshold2).
+	 */
+	async addBlueRedVolumeTo3DViewport ()
+	{
+		const viewport = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
+		if (!viewport || !this.volume_segm?.volumeId) return;
+		const t1 = typeof this.blue_red1 === 'number' ? this.blue_red1 : 1.2;
+		const t2 = typeof this.blue_red2 === 'number' ? this.blue_red2 : 1.32;
+		const volumeId = this.getOrCreateBlueRedLabelmapVolume(t1, t2);
+		if (!volumeId) return;
+		const _this = this;
+		await addVolumesToViewports(this.renderingEngine, [{
+			volumeId,
+			callback ({ volumeActor, volumeId: vid }) {
+				const prop = volumeActor.getProperty();
+				const rgb = prop.getRGBTransferFunction(0);
+				rgb.removeAllPoints();
+				rgb.addRGBPoint(0, 0, 0, 0);
+				rgb.addRGBPoint(t1, 0, 0, 1);
+				rgb.addRGBPoint(t2, 1, 0, 0);
+				rgb.setMappingRange(0, Math.max(t2 * 1.1, 2));
+				const opacity = prop.getScalarOpacity(0);
+				opacity.removeAllPoints();
+				opacity.addPoint(0, 0);
+				opacity.addPoint(0.001, 0.5);
+				opacity.addPoint(2, 0.5);
+			},
+		}], [ viewport.id ], true);
+		const entry = viewport.getActors().find(a => a.referencedId === volumeId);
+		if (entry) _this._blueRedVolumeActorUID = entry.uid;
+		_this._blueRedVolumeShown = true;
+		Array.from(viewport._actors.values())
+			.filter(a => a.representationUID?.includes(_this.volume_segm.volumeId + '-Surface'))
+			.forEach(a => { if (a.actor?.setVisibility) a.actor.setVisibility(false); });
+		this.renderingEngine.renderViewports([ viewport.id ]);
+	}
+
+	removeBlueRedVolumeFrom3DViewport ()
+	{
+		const viewport = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
+		if (!viewport || this._blueRedVolumeActorUID == null) return;
+		viewport.removeVolumeActors([ this._blueRedVolumeActorUID ], true);
+		this._blueRedVolumeActorUID = null;
+		this._blueRedVolumeShown = false;
+		const prefix = this.volume_segm?.volumeId + '-Surface';
+		Array.from(viewport._actors.values())
+			.filter(a => a.representationUID?.includes(prefix))
+			.forEach(a => { if (a.actor?.setVisibility) a.actor.setVisibility(true); });
+		this.renderingEngine.renderViewports([ viewport.id ]);
+	}
+
+	async toggleBlueRedVolume ()
+	{
+		if (this._blueRedVolumeShown) {
+			this.removeBlueRedVolumeFrom3DViewport();
+		} else {
+			await this.addBlueRedVolumeTo3DViewport();
+		}
+	}
+
+	/** Invalidate cached blue-red volume so next getOrCreateBlueRedLabelmapVolume rebuilds with current segment visibility. */
+	invalidateBlueRedVolumeCache ()
+	{
+		if (!this.volume_segm?.volumeId) return;
+		const volumeId = `bluered:${this.volume_segm.volumeId}`;
+		if (cache.getVolume(volumeId)) cache.removeVolumeLoadObject(volumeId);
+		this._blueRedVolumeThresholds = null;
+	}
+
+	/**
+	 * Apply current segmentation visibility to 3D surface actors.
+	 * Uses segmentation_visibility: for 3D we consider a segment visible if it is visible in any 2D viewport.
+	 */
+	applySurfaceVisibilityTo3DViewport ()
+	{
+		if (!this.volume_segm?.volumeId) return;
+		const viewport = this.renderingEngine.getViewports().find(v => v instanceof cornerstone.VolumeViewport3D);
+		if (!viewport) return;
+		const prefix = this.volume_segm.volumeId + '-Surface';
+		const actors = viewport.getActors?.() ?? Array.from(viewport._actors?.values() ?? []);
+		let changed = false;
+		for (const entry of actors)
+		{
+			const repUID = entry.representationUID;
+			if (!repUID?.includes(prefix)) continue;
+			const parts = repUID.split('-');
+			const segmentIndex = parts.length >= 3 ? parseInt(parts[2], 10) : NaN;
+			if (Number.isNaN(segmentIndex)) continue;
+			const segmIdx = segmentIndex - 2;
+			const perViewport = this.segmentation_visibility?.[segmIdx];
+			const visible = perViewport == null
+				? true
+				: !Object.values(perViewport).every(v => v === false);
+			if (entry.actor?.setVisibility) {
+				entry.actor.setVisibility(visible);
+				changed = true;
+			}
+		}
+		if (changed) this.renderingEngine.renderViewports([ viewport.id ]);
 	}
 
 	toggleVolumeActor ()

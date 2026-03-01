@@ -354,6 +354,11 @@
 		"en": "Labelmap",
 		"ru": "Карта меток"
 	},
+	"Show labelmap":
+	{
+		"en": "Show labelmap",
+		"ru": "Показывать карту меток"
+	},
 	"Contour":
 	{
 		"en": "Contour",
