@@ -3174,7 +3174,7 @@ export default class Serie
 			.filter(vi => vi.type !== 'volume3d')
 			.forEach((viewport_input) => {
 				const viewport = this.renderingEngine.getViewport(viewport_input.viewportId);
-				const opacity = typeof viewport?.__labelmapOpacity === 'number' ? viewport.__labelmapOpacity : 0.5;
+				const opacity = typeof viewport?.__labelmapOpacity === 'number' ? viewport.__labelmapOpacity : 1;
 				try {
 					cornerstoneTools.segmentation.config.style.setStyle(
 						{
@@ -3259,6 +3259,10 @@ export default class Serie
 
 	/** Max number of vertex-color cache entries (per blue_red thresholds + points hash). Cleared when thresholds change. */
 	static get VERTEX_COLORS_CACHE_MAX () { return 100; }
+
+	/** Scalar offset for voxels outside segment: same color as base range, transfer function maps this range to 0 opacity. Kept small so opacity LUT has enough resolution over [0, high]. */
+	static get BLUE_RED_OPACITY_ZERO_OFFSET () { return 10; }
+	getBlueRedOpacityZeroOffset () { return Serie.BLUE_RED_OPACITY_ZERO_OFFSET; }
 
 	/**
 	 * Compute vertex colors (RGB Uint8Array) for world-space points using the same
@@ -3486,6 +3490,89 @@ export default class Serie
 			];
 		}
 		return [ 255, 0, 0 ];
+	}
+
+	/**
+	 * Trilinear sample of scalar volume at continuous (i,j,k). Layout: linear = i + j*w + k*w*h.
+	 */
+	_trilinearSample (volScalar, w, h, d, i, j, k)
+	{
+		const i0 = Math.max(0, Math.min(Math.floor(i), w - 1));
+		const j0 = Math.max(0, Math.min(Math.floor(j), h - 1));
+		const k0 = Math.max(0, Math.min(Math.floor(k), d - 1));
+		const i1 = Math.min(i0 + 1, w - 1);
+		const j1 = Math.min(j0 + 1, h - 1);
+		const k1 = Math.min(k0 + 1, d - 1);
+		const fi = i - i0, fj = j - j0, fk = k - k0;
+		const v000 = volScalar[i0 + j0 * w + k0 * w * h];
+		const v100 = volScalar[i1 + j0 * w + k0 * w * h];
+		const v010 = volScalar[i0 + j1 * w + k0 * w * h];
+		const v110 = volScalar[i1 + j1 * w + k0 * w * h];
+		const v001 = volScalar[i0 + j0 * w + k1 * w * h];
+		const v101 = volScalar[i1 + j0 * w + k1 * w * h];
+		const v011 = volScalar[i0 + j1 * w + k1 * w * h];
+		const v111 = volScalar[i1 + j1 * w + k1 * w * h];
+		return (1 - fi) * (1 - fj) * (1 - fk) * v000 + fi * (1 - fj) * (1 - fk) * v100 +
+			(1 - fi) * fj * (1 - fk) * v010 + fi * fj * (1 - fk) * v110 +
+			(1 - fi) * (1 - fj) * fk * v001 + fi * (1 - fj) * fk * v101 +
+			(1 - fi) * fj * fk * v011 + fi * fj * fk * v111;
+	}
+
+	/**
+	 * Stamp surface-slice boundary point intensities onto the blue-red volume. For each point (on the boundary),
+	 * sample reference at that world position (trilinear), then set the quad of nearest voxels in the current slice
+	 * to that normalized intensity (max with existing so we keep reddest). Uses intensity at the edge, not at voxel center.
+	 * @param {Float32Array} scalarData - blue-red volume scalars (modified in place)
+	 * @param {object} imageData - vtkImageData (same geometry as reference) for worldToIndex and dimensions
+	 * @param {Float32Array} points - world x,y,z triples (length multiple of 3)
+	 * @param {object} viewport - for slice axis and slice index
+	 */
+	stampSurfaceSlicePointIntensitiesOntoBlueRedVolume (scalarData, imageData, points, viewport)
+	{
+		if (!this.volume?.imageData || !points?.length || !imageData?.worldToIndex) return;
+		const volScalar = this.volume.voxelManager.getCompleteScalarDataArray();
+		const segScalar = this.volume_segm?.voxelManager?.getCompleteScalarDataArray();
+		const n = volScalar.length;
+		if (!segScalar || n !== segScalar.length || scalarData.length !== n) return;
+		let sum = 0, count = 0;
+		for (let i = 0; i < n; i++) { if (segScalar[i] !== 0) { sum += volScalar[i]; count++; } }
+		const mean = count > 0 ? sum / count : 1;
+		const dims = imageData.getDimensions();
+		const [w, h, d] = [dims[0], dims[1], dims[2]];
+		const cam = viewport.getCamera?.();
+		if (!cam?.viewPlaneNormal?.length) return;
+		const normal = cam.viewPlaneNormal;
+		const sliceAxis = Math.abs(normal[0]) > 0.5 ? 0 : Math.abs(normal[1]) > 0.5 ? 1 : 2;
+		const sliceIndex = typeof viewport.getSliceIndex === 'function' ? viewport.getSliceIndex() : 0;
+		const sliceIndexClamped = Math.max(0, Math.min(sliceIndex, [ w, h, d ][sliceAxis] - 1));
+		for (let idx = 0; idx < points.length; idx += 3) {
+			const world = [ points[idx], points[idx + 1], points[idx + 2] ];
+			const ijk = imageData.worldToIndex(world);
+			const intensity = this._trilinearSample(volScalar, w, h, d, ijk[0], ijk[1], ijk[2]);
+			const normalized = intensity / mean;
+			const i0 = Math.floor(ijk[0]);
+			const j0 = Math.floor(ijk[1]);
+			const k0 = Math.floor(ijk[2]);
+			const dimsPlane = sliceAxis === 0 ? [ h, d ] : sliceAxis === 1 ? [ w, d ] : [ w, h ];
+			const pa0 = Math.max(0, Math.min(sliceAxis === 0 ? j0 : i0, dimsPlane[0] - 1));
+			const pb0 = Math.max(0, Math.min(sliceAxis === 2 ? j0 : k0, dimsPlane[1] - 1));
+			const pa1 = Math.min(pa0 + 1, dimsPlane[0] - 1);
+			const pb1 = Math.min(pb0 + 1, dimsPlane[1] - 1);
+			const getLinear = (pa, pb) => {
+				const coords = [ 0, 0, 0 ];
+				coords[sliceAxis] = sliceIndexClamped;
+				if (sliceAxis === 0) { coords[1] = pa; coords[2] = pb; }
+				else if (sliceAxis === 1) { coords[0] = pa; coords[2] = pb; }
+				else { coords[0] = pa; coords[1] = pb; }
+				return coords[0] + coords[1] * w + coords[2] * w * h;
+			};
+			const quad = [ getLinear(pa0, pb0), getLinear(pa1, pb0), getLinear(pa0, pb1), getLinear(pa1, pb1) ];
+			for (const lin of quad) {
+				if (lin >= 0 && lin < n && scalarData[lin] >= 0) {
+					scalarData[lin] = Math.max(scalarData[lin], normalized);
+				}
+			}
+		}
 	}
 
 	/**
@@ -3815,9 +3902,11 @@ export default class Serie
 			if (segScalar[i] !== 0) { sum += volScalar[i]; count++; }
 		}
 		const mean = count > 0 ? sum / count : 1;
+		const opacityOff = Serie.BLUE_RED_OPACITY_ZERO_OFFSET;
 		const scalarData = new Float32Array(n);
 		for (let i = 0; i < n; i++) {
-			scalarData[i] = isEnabled(segScalar[i]) ? volScalar[i] / mean : 0;
+			const norm = volScalar[i] / mean;
+			scalarData[i] = isEnabled(segScalar[i]) ? norm : opacityOff + norm;
 		}
 		const ref = this.volume;
 		const dimensions = ref.dimensions.slice();
@@ -3858,7 +3947,7 @@ export default class Serie
 
 	/**
 	 * Build vtkImageData for the blue-red scalar volume (same data as getOrCreateBlueRedLabelmapVolume).
-	 * Used by the VTK overlay; only enabled segment indices (per segmentation menu) are included.
+	 * Returns 2-component: [scalar, mask] so overlay can apply real opacity mask in shader.
 	 * @param {object} [viewport] - If provided, only segments visible in this viewport are included; else visible in any viewport.
 	 */
 	getBlueRedVolumeAsVtkImageData (viewport)
@@ -3876,10 +3965,6 @@ export default class Serie
 			if (segScalar[i] !== 0) { sum += volScalar[i]; count++; }
 		}
 		const mean = count > 0 ? sum / count : 1;
-		const scalarData = new Float32Array(n);
-		for (let i = 0; i < n; i++) {
-			scalarData[i] = isEnabled(segScalar[i]) ? volScalar[i] / mean : -1;
-		}
 		const ref = this.volume;
 		const dimensions = ref.dimensions.slice();
 		const spacing = ref.spacing.slice();
@@ -3895,7 +3980,13 @@ export default class Serie
 		imageData.setSpacing(spacing[0], spacing[1], spacing[2]);
 		imageData.setOrigin(origin[0], origin[1], origin[2]);
 		imageData.setDirection(direction);
-		imageData.getPointData().setScalars(vtkDataArray.newInstance({ name: 'Scalars', values: scalarData, numberOfComponents: 1 }));
+
+		const scalarData = new Float32Array(n * 2);
+		for (let i = 0; i < n; i++) {
+			scalarData[i * 2] = volScalar[i] / mean;
+			scalarData[i * 2 + 1] = isEnabled(segScalar[i]) ? 1 : 0;
+		}
+		imageData.getPointData().setScalars(vtkDataArray.newInstance({ name: 'Scalars', values: scalarData, numberOfComponents: 2 }));
 		return imageData;
 	}
 
@@ -3980,6 +4071,8 @@ export default class Serie
 		if (!viewport || !this.volume_segm?.volumeId) return;
 		const t1 = typeof this.blue_red1 === 'number' ? this.blue_red1 : 1.2;
 		const t2 = typeof this.blue_red2 === 'number' ? this.blue_red2 : 1.32;
+		const high = Math.max(t2 * 1.1, 2);
+		const opacityOff = Serie.BLUE_RED_OPACITY_ZERO_OFFSET;
 		const volumeId = this.getOrCreateBlueRedLabelmapVolume(t1, t2);
 		if (!volumeId) return;
 		const _this = this;
@@ -3992,12 +4085,19 @@ export default class Serie
 				rgb.addRGBPoint(0, 0, 0, 0);
 				rgb.addRGBPoint(t1, 0, 0, 1);
 				rgb.addRGBPoint(t2, 1, 0, 0);
-				rgb.setMappingRange(0, Math.max(t2 * 1.1, 2));
+				rgb.addRGBPoint(high, 1, 0, 0);
+				rgb.addRGBPoint(opacityOff, 0, 0, 1);
+				rgb.addRGBPoint(opacityOff + t1, 0, 0, 1);
+				rgb.addRGBPoint(opacityOff + t2, 1, 0, 0);
+				rgb.addRGBPoint(opacityOff + high, 1, 0, 0);
+				rgb.setMappingRange(0, opacityOff + high);
 				const opacity = prop.getScalarOpacity(0);
 				opacity.removeAllPoints();
 				opacity.addPoint(0, 0);
 				opacity.addPoint(0.001, 0.5);
-				opacity.addPoint(2, 0.5);
+				opacity.addPoint(high, 0.5);
+				opacity.addPoint(opacityOff, 0);
+				opacity.addPoint(opacityOff + high, 0);
 			},
 		}], [ viewport.id ], true);
 		const entry = viewport.getActors().find(a => a.referencedId === volumeId);

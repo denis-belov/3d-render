@@ -54,6 +54,7 @@ export function getOrCreateBlueRedVtkOverlay (viewport, series) {
 	let surfaceSliceActor = null;
 	let surfaceSliceRequestId = 0;
 	let initialized = false;
+	let scalarRangeHigh = 0;
 
 	function ensureVolumeActorCreated () {
 		if (initialized && sliceActor) return true;
@@ -63,12 +64,16 @@ export function getOrCreateBlueRedVtkOverlay (viewport, series) {
 		imageData = data;
 		const t1 = typeof series.blue_red1 === 'number' ? series.blue_red1 : 1.2;
 		const t2 = typeof series.blue_red2 === 'number' ? series.blue_red2 : 1.32;
+		const high = Math.max(t2 * 1.1, 2, 0.001);
+		scalarRangeHigh = high;
+		// So the volume texture uses range (0, high) for color lookup and the t1–t2 gradient is visible
+		const scalars = imageData.getPointData().getScalars();
+		if (scalars && scalars.setRange) scalars.setRange({ min: 0, max: high }, 0);
 
 		sliceMapper = vtkImageResliceMapper.newInstance();
 		sliceMapper.setInputData(imageData);
 		sliceMapper.setSlicePlane(slicePlane);
 
-		const high = Math.max(t2 * 1.1, 2, 0.001);
 		const ctf = vtkColorTransferFunction.newInstance();
 		const pw = vtkPiecewiseFunction.newInstance();
 		if (t1 === t2) {
@@ -78,16 +83,30 @@ export function getOrCreateBlueRedVtkOverlay (viewport, series) {
 			pw.addPoint(0.001, 1);
 			pw.addPoint(high, 1);
 		} else {
-			ctf.addRGBPoint(-1, 0, 0, 0);
 			ctf.addRGBPoint(0, 0, 0, 1);
 			ctf.addRGBPoint(t1, 0, 0, 1);
 			ctf.addRGBPoint(t2, 1, 0, 0);
 			ctf.addRGBPoint(high, 1, 0, 0);
-			pw.addPoint(-1, 0);
-			pw.addPoint(0, 1);
-			pw.addPoint(high, 1);
+			pw.addPoint(0, 0);
+			pw.addPoint(0.001, 0.5);
+			pw.addPoint(high, 0.5);
 		}
-		ctf.setMappingRange(-1, high);
+		ctf.setMappingRange(0, high);
+
+		if (imageData.getPointData().getScalars().getNumberOfComponents() === 2 && typeof sliceMapper.replaceShaderValues === 'function') {
+			const origReplace = sliceMapper.replaceShaderValues.bind(sliceMapper);
+			sliceMapper.replaceShaderValues = function (shaders, ren, actor) {
+				origReplace(shaders, ren, actor);
+				let fs = shaders.Fragment;
+				if (fs && fs.indexOf('pwfscale0*tvalue.g + pwfshift0') !== -1) {
+					fs = fs.replace(
+						'gl_FragData[0] = vec4(texture2D(colorTexture1, vec2(intensity, 0.5)).rgb, pwfscale0*tvalue.g + pwfshift0);',
+						'float scalarOpacity = texture2D(pwfTexture1, vec2(intensity * pwfscale0 + pwfshift0, 0.5)).r;\n  float maskVal = (tvalue.g > 0.5) ? 1.0 : 0.0;\n  gl_FragData[0] = vec4(texture2D(colorTexture1, vec2(intensity, 0.5)).rgb, scalarOpacity * opacity * maskVal);'
+					);
+					shaders.Fragment = fs;
+				}
+			};
+		}
 
 		sliceActor = vtkImageSlice.newInstance();
 		sliceActor.setMapper(sliceMapper);
@@ -96,6 +115,7 @@ export function getOrCreateBlueRedVtkOverlay (viewport, series) {
 			prop.setRGBTransferFunction(0, ctf);
 			prop.setPiecewiseFunction(0, pw);
 			prop.setUseLookupTableScalarRange(true);
+			prop.setIndependentComponents(false);
 		}
 		renderer.addActor(sliceActor);
 		const lineWidth = typeof viewport.__surfaceSliceLineWidth === 'number' ? viewport.__surfaceSliceLineWidth : 2;
@@ -118,6 +138,19 @@ export function getOrCreateBlueRedVtkOverlay (viewport, series) {
 				empty.setLines(vtkCellArray.newInstance());
 				mapper.setInputData(empty);
 			} else {
+				// Stamp surface-slice boundary point intensities onto blue-red volume (intensity at edge, not at voxel center)
+				if (sliceMapper && series.getBlueRedVolumeAsVtkImageData && series.stampSurfaceSlicePointIntensitiesOntoBlueRedVolume) {
+					const freshData = series.getBlueRedVolumeAsVtkImageData(viewport);
+					if (freshData) {
+						const scalarData = freshData.getPointData().getScalars().getData();
+						series.stampSurfaceSlicePointIntensitiesOntoBlueRedVolume(scalarData, freshData, sliceData.points, viewport);
+						const s = freshData.getPointData().getScalars();
+						if (s && s.setRange && scalarRangeHigh > 0) s.setRange({ min: 0, max: scalarRangeHigh }, 0);
+						sliceMapper.setInputData(freshData);
+						if (imageData && imageData !== freshData) imageData.delete();
+						imageData = freshData;
+					}
+				}
 				const polyData = vtkPolyData.newInstance();
 				polyData.getPoints().setData(sliceData.points, 3);
 				const lineCells = vtkCellArray.newInstance();
@@ -197,14 +230,16 @@ export function getOrCreateBlueRedVtkOverlay (viewport, series) {
 		}
 		syncCamera();
 		resize();
-		const opacity = typeof viewport.__labelmapOpacity === 'number' ? viewport.__labelmapOpacity : 0.5;
+		// Slider drives canvas/container filter opacity; VTK actors stay at 1
+		const filterOpacity = typeof viewport.__labelmapOpacity === 'number' ? viewport.__labelmapOpacity : 1;
+		container.style.filter = `opacity(${filterOpacity})`;
 		if (sliceActor) {
 			const prop = sliceActor.getProperty();
-			if (prop && prop.setOpacity) prop.setOpacity(opacity);
+			if (prop && prop.setOpacity) prop.setOpacity(1);
 		}
 		if (surfaceSliceActor) {
 			const prop = surfaceSliceActor.getProperty();
-			if (prop && prop.setOpacity) prop.setOpacity(opacity);
+			if (prop && prop.setOpacity) prop.setOpacity(1);
 			const lw = typeof viewport.__surfaceSliceLineWidth === 'number' ? viewport.__surfaceSliceLineWidth : 2;
 			if (prop && prop.setLineWidth) prop.setLineWidth(lw);
 		}

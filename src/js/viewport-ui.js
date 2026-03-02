@@ -339,9 +339,9 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
       if (opacity == null) {
         try {
           const currentStyle = cornerstoneTools.segmentation.config.style.getStyle(specifier);
-          opacity = typeof currentStyle?.fillAlpha === 'number' ? currentStyle.fillAlpha : 0.5;
+          opacity = typeof currentStyle?.fillAlpha === 'number' ? currentStyle.fillAlpha : 1;
         } catch (_) {
-          opacity = 0.5;
+          opacity = 1;
         }
       }
       viewport.__labelmapOpacity = opacity;
@@ -385,9 +385,9 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
       if (opacity == null) {
         try {
           const currentStyle = cornerstoneTools.segmentation.config.style.getStyle(specifier);
-          opacity = typeof currentStyle?.fillAlpha === 'number' ? currentStyle.fillAlpha : 0.5;
+          opacity = typeof currentStyle?.fillAlpha === 'number' ? currentStyle.fillAlpha : 1;
         } catch (_) {
-          opacity = 0.5;
+          opacity = 1;
         }
       }
       try {
@@ -464,12 +464,12 @@ export const getViewportUIVolume = (_this, viewport_input, viewport_input_index)
             segmentationId: _this.volume_segm.volumeId,
             type: cornerstoneTools.Enums.SegmentationRepresentations.Labelmap,
           });
-          initialOpacity = typeof style?.fillAlpha === 'number' ? style.fillAlpha : 0.5;
+          initialOpacity = typeof style?.fillAlpha === 'number' ? style.fillAlpha : 1;
         } else {
-          initialOpacity = 0.5;
+          initialOpacity = 1;
         }
       } catch (_) {
-        initialOpacity = 0.5;
+        initialOpacity = 1;
       }
       if (viewportForOpacity) viewportForOpacity.__labelmapOpacity = initialOpacity;
     }
